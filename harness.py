@@ -11,7 +11,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import openpyxl
 from claude_agent_sdk import query
 from claude_agent_sdk.types import (
     AssistantMessage,
@@ -41,7 +40,6 @@ INGESTABLE_PDF = {".pdf"}
 PLANNER_ALLOWED = [
     "Read", "Glob", "Grep",
     "Write(model_spec.json)", "Edit(model_spec.json)",
-    "Write(mechanical_checks.json)", "Edit(mechanical_checks.json)",
     "Bash(ls*)", "Bash(cat*)", "Bash(wc*)",
 ]
 
@@ -59,28 +57,6 @@ EVALUATOR_ALLOWED = [
 ]
 EVALUATOR_DISALLOWED = ["Agent"]
 
-MECHANICAL_CHECKS_PATH = "mechanical_checks.json"
-MECHANICAL_CHECK_TYPES = {
-    "sheet_exists",
-    "sheet_order",
-    "exact_formula_copy",
-    "exact_style_copy",
-    "label_present",
-    "text_absent",
-}
-MECHANICAL_CHECK_SOURCES = {
-    "user_brief",
-    "conventions",
-    "reference_artifact",
-    "input_doc",
-}
-MECHANICAL_GATING_TYPES = {
-    "sheet_exists",
-    "sheet_order",
-    "exact_formula_copy",
-    "exact_style_copy",
-}
-
 
 def read_file(path: Path) -> str:
     return path.read_text() if path.exists() else ""
@@ -88,15 +64,6 @@ def read_file(path: Path) -> str:
 
 def load_prompt(agent_name: str) -> str:
     return read_file(AGENTS_DIR / f"{agent_name}.md")
-
-
-def read_json(path: Path, default):
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return default
 
 
 class Run:
@@ -449,211 +416,6 @@ def _issues_to_feedback(issues: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _default_mechanical_checks() -> dict:
-    return {"version": 1, "checks": []}
-
-
-def _coerce_check(check: dict, idx: int) -> tuple[dict | None, str | None]:
-    if not isinstance(check, dict):
-        return None, f"Check #{idx + 1} is not an object"
-
-    out = dict(check)
-    out["id"] = str(out.get("id") or f"check_{idx + 1}")
-    check_type = str(out.get("type") or "").strip()
-    source = str(out.get("source") or "").strip()
-    if check_type not in MECHANICAL_CHECK_TYPES:
-        return None, f"{out['id']}: unsupported type '{check_type}'"
-    if source not in MECHANICAL_CHECK_SOURCES:
-        return None, f"{out['id']}: unsupported source '{source}'"
-
-    severity = str(out.get("severity") or "critical").lower()
-    if severity not in {"critical", "warning"}:
-        return None, f"{out['id']}: unsupported severity '{severity}'"
-    out["severity"] = severity
-    out["type"] = check_type
-    out["source"] = source
-    out["target"] = str(out.get("target") or "formulas").lower()
-
-    required = {
-        "sheet_exists": {"sheet"},
-        "sheet_order": {"sheets"},
-        "exact_formula_copy": {"sheet", "reference_sheet"},
-        "exact_style_copy": {"sheet", "reference_sheet"},
-        "label_present": {"sheet", "text"},
-        "text_absent": {"text"},
-    }[check_type]
-    missing = [key for key in sorted(required) if key not in out]
-    if missing:
-        return None, f"{out['id']}: missing required fields: {', '.join(missing)}"
-    return out, None
-
-
-def load_mechanical_checks(run: Run, spec: dict) -> dict:
-    path = run.run_dir / MECHANICAL_CHECKS_PATH
-    payload = read_json(path, _default_mechanical_checks())
-    checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
-    valid = []
-    errors = []
-    spec_sheets = {sheet.get("name") for sheet in spec.get("sheets", []) if sheet.get("name")}
-    for idx, raw_check in enumerate(checks):
-        check, err = _coerce_check(raw_check, idx)
-        if err:
-            errors.append(err)
-            continue
-        check_type = check["type"]
-        if check_type != "sheet_order":
-            sheet_name = check.get("sheet")
-            if sheet_name and sheet_name not in spec_sheets:
-                errors.append(f"{check['id']}: sheet '{sheet_name}' is not in model_spec.json")
-                continue
-        if check_type == "sheet_order":
-            order = check.get("sheets")
-            if not isinstance(order, list) or not all(isinstance(x, str) for x in order):
-                errors.append(f"{check['id']}: sheets must be a list of strings")
-                continue
-            unknown = [name for name in order if name not in spec_sheets]
-            if unknown:
-                errors.append(f"{check['id']}: unknown sheets in order: {', '.join(unknown)}")
-                continue
-        valid.append(check)
-
-    sanitized = {"version": 1, "checks": valid}
-    path.write_text(json.dumps(sanitized, indent=2))
-    if errors:
-        run.append_progress(f"Mechanical checks sanitized: dropped {len(errors)} invalid checks")
-        for err in errors[:5]:
-            run.log_activity("harness", "stderr", f"mechanical_checks: {err}")
-    return sanitized
-
-
-def _resolve_check_file(run: Run, subdir: str, sheet_name: str) -> Path | None:
-    candidates = [
-        run.evals_dir / "reference" / subdir / f"{sheet_name}.txt",
-        run.evals_dir / subdir / f"{sheet_name}.txt",
-    ]
-    for path in candidates:
-        if path.exists():
-            return path
-    return None
-
-
-def run_mechanical_checks(run: Run, manifest: dict) -> dict:
-    checks = manifest.get("checks") or []
-    if not checks:
-        return {"passed": True, "issues": []}
-
-    model_path = run.models_dir / "model.xlsx"
-    try:
-        wb = openpyxl.load_workbook(model_path, read_only=True)
-        sheet_order = wb.sheetnames
-        wb.close()
-    except Exception as exc:
-        issue = {
-            "severity": "critical",
-            "summary": "Workbook could not be opened for mechanical checks",
-            "details": str(exc),
-            "fix": "Ensure models/model.xlsx exists and is a valid workbook",
-        }
-        return {"passed": False, "issues": [issue]}
-
-    issues = []
-    for check in checks:
-        check_type = check["type"]
-        severity = "critical" if check_type in MECHANICAL_GATING_TYPES else check["severity"]
-        issue = None
-
-        if check_type == "sheet_exists":
-            sheet = check["sheet"]
-            if sheet not in sheet_order:
-                issue = {
-                    "severity": severity,
-                    "sheet": sheet,
-                    "summary": "Required sheet is missing",
-                    "details": f"Expected sheet '{sheet}' to exist in workbook",
-                    "fix": "Create the missing sheet or correct the planned sheet name",
-                }
-
-        elif check_type == "sheet_order":
-            expected = check["sheets"]
-            actual = sheet_order[:len(expected)]
-            if actual != expected:
-                issue = {
-                    "severity": severity,
-                    "summary": "Sheet order does not match planned order",
-                    "details": f"Expected leading sheet order {expected}; found {actual}",
-                    "fix": "Reorder workbook tabs to match the planned sheet order",
-                }
-
-        elif check_type in {"exact_formula_copy", "exact_style_copy"}:
-            subdir = "formulas" if check_type == "exact_formula_copy" else "styles"
-            current_path = run.evals_dir / subdir / f"{check['sheet']}.txt"
-            reference_path = _resolve_check_file(run, subdir, check["reference_sheet"])
-            if not current_path.exists():
-                issue = {
-                    "severity": severity,
-                    "sheet": check["sheet"],
-                    "summary": f"Missing {subdir} dump for sheet",
-                    "details": f"Expected dump at {current_path.name}",
-                    "fix": f"Run dump.py after building {check['sheet']}",
-                }
-            elif reference_path is None:
-                issue = {
-                    "severity": "warning",
-                    "sheet": check["sheet"],
-                    "summary": f"Missing reference {subdir} dump",
-                    "details": f"Could not locate reference dump for '{check['reference_sheet']}'",
-                    "fix": "Verify the reference workbook was ingested correctly",
-                }
-            elif current_path.read_text() != reference_path.read_text():
-                issue = {
-                    "severity": severity,
-                    "sheet": check["sheet"],
-                    "summary": f"{subdir.title()} dump does not exactly match reference",
-                    "details": f"Expected exact match against '{check['reference_sheet']}'",
-                    "fix": "Copy the reference sheet exactly instead of rebuilding or partially matching it",
-                }
-
-        elif check_type in {"label_present", "text_absent"}:
-            target = check["target"]
-            search_spaces = []
-            if target in {"formulas", "any"}:
-                search_spaces.append(run.evals_dir / "formulas" / f"{check.get('sheet', '')}.txt" if check.get("sheet") else run.evals_dir / "formulas")
-            if target in {"styles", "any"}:
-                search_spaces.append(run.evals_dir / "styles" / f"{check.get('sheet', '')}.txt" if check.get("sheet") else run.evals_dir / "styles")
-
-            haystacks = []
-            for space in search_spaces:
-                if space.is_file() and space.exists():
-                    haystacks.append(space.read_text())
-                elif space.is_dir() and space.exists():
-                    haystacks.extend(p.read_text() for p in sorted(space.glob("*.txt")))
-            combined = "\n".join(haystacks)
-            text = str(check["text"])
-            if check_type == "label_present" and text not in combined:
-                issue = {
-                    "severity": severity,
-                    "sheet": check.get("sheet"),
-                    "summary": "Required text is missing",
-                    "details": f"Did not find '{text}' in {target} dumps",
-                    "fix": "Add the missing label or section to the sheet output",
-                }
-            if check_type == "text_absent" and text in combined:
-                issue = {
-                    "severity": severity,
-                    "sheet": check.get("sheet"),
-                    "summary": "Forbidden text is present",
-                    "details": f"Found forbidden text '{text}' in {target} dumps",
-                    "fix": "Remove or rename the forbidden text",
-                }
-
-        if issue:
-            issue["check_id"] = check["id"]
-            issues.append(issue)
-
-    critical_issues = [issue for issue in issues if issue.get("severity") == "critical"]
-    return {"passed": not critical_issues, "issues": issues}
-
-
 MAX_VISUAL_FIX_ROUNDS = 2
 
 
@@ -688,7 +450,6 @@ Browse these files with your tools to understand the reference structure. Use fo
 
 ## Instructions
 Write model_spec.json to {run.run_dir / "model_spec.json"}.
-Also write mechanical_checks.json to {run.run_dir / MECHANICAL_CHECKS_PATH}.
 Keep it high-level — describe what each sheet should contain, not cell-by-cell formulas.
 """
 
@@ -705,17 +466,15 @@ Keep it high-level — describe what each sheet should contain, not cell-by-cell
         sys.exit(1)
 
     spec = json.loads(spec_path.read_text())
-    load_mechanical_checks(run, spec)
     run.append_progress(f"Planner done: {len(spec.get('sheets', []))} sheets planned")
     return spec
 
 
-async def build(run: Run, spec: dict, checks_manifest: dict, feedback: str | None = None) -> None:
+async def build(run: Run, spec: dict, feedback: str | None = None) -> None:
     """Builder: reads spec + reference data, builds all sheets in one session."""
     conventions = read_file(run.run_dir / "conventions.md")
     system_prompt = load_prompt("builder")
     spec_json = json.dumps(spec, indent=2)
-    checks_json = json.dumps(checks_manifest, indent=2)
 
     # Ensure scripts dir exists
     scripts_dir = run.run_dir / "scripts"
@@ -735,11 +494,6 @@ Previous build scripts are in scripts/. Read them to understand what was built, 
 {spec_json}
 ```
 
-## Mechanical Checks
-```json
-{checks_json}
-```
-
 ## Conventions
 {conventions}
 
@@ -750,7 +504,6 @@ You are in: {run.run_dir}
 - Input data: input/ (text files, CSVs, Excel dumps)
 - Save scripts to: scripts/ (e.g., scripts/01_SheetName.py)
 - Dump tool: `python3 dump.py models/model.xlsx` (extracts formulas/styles/screenshots to evals/)
-- Mechanical checks: mechanical_checks.json (planner-owned narrow acceptance checks; satisfy them but do not edit them)
 
 ## Instructions
 Build every sheet listed in the spec, in order. For each sheet:
@@ -772,27 +525,15 @@ After all sheets are built, run dump.py one final time and do a quick self-check
     run.append_progress(f"Builder done{' (fix pass)' if feedback else ''}")
 
 
-async def evaluate(run: Run, spec: dict, checks_manifest: dict, mechanical_result: dict | None = None) -> dict:
+async def evaluate(run: Run, spec: dict) -> dict:
     """Evaluator: checks completed model against spec and returns a parsed verdict."""
     system_prompt = load_prompt("evaluator_v2")
     conventions = read_file(run.run_dir / "conventions.md")
     spec_json = json.dumps(spec, indent=2)
-    checks_json = json.dumps(checks_manifest, indent=2)
-    mechanical_json = json.dumps(mechanical_result or {"passed": True, "issues": []}, indent=2)
 
     prompt = f"""## Build Spec
 ```json
 {spec_json}
-```
-
-## Mechanical Checks
-```json
-{checks_json}
-```
-
-## Mechanical Check Results
-```json
-{mechanical_json}
 ```
 
 ## Conventions
@@ -854,11 +595,10 @@ async def main():
     else:
         spec = json.loads((run.run_dir / "model_spec.json").read_text())
         print(f"Loaded existing spec: {len(spec.get('sheets', []))} sheets")
-    checks_manifest = load_mechanical_checks(run, spec)
 
     # --- Phase 2: Build ---
     if start in ("plan", "build"):
-        await build(run, spec, checks_manifest)
+        await build(run, spec)
         run.update_status("dumping", "Extracting final model data")
         try:
             run.run_dump()
@@ -868,23 +608,7 @@ async def main():
     # --- Phase 3: Logic eval → Fix loop ---
     visual_feedback = ""
     for round_num in range(1, MAX_EVAL_ROUNDS + 1):
-        mechanical_result = run_mechanical_checks(run, checks_manifest)
-        if mechanical_result["issues"]:
-            critical = sum(1 for issue in mechanical_result["issues"] if issue["severity"] == "critical")
-            warnings = len(mechanical_result["issues"]) - critical
-            run.append_progress(
-                f"Mechanical checks round {round_num}: critical={critical}, warnings={warnings}"
-            )
-
-        if not mechanical_result["passed"]:
-            verdict = {
-                "logic_passed": False,
-                "visual_grade": "?",
-                "visual_feedback": "",
-                "logic_feedback": _issues_to_feedback(mechanical_result["issues"]),
-            }
-        else:
-            verdict = await evaluate(run, spec, checks_manifest, mechanical_result)
+        verdict = await evaluate(run, spec)
         grade = verdict["visual_grade"]
         visual_feedback = verdict["visual_feedback"]
 
@@ -895,7 +619,7 @@ async def main():
             break
 
         if round_num < MAX_EVAL_ROUNDS:
-            await build(run, spec, checks_manifest, feedback=verdict["logic_feedback"])
+            await build(run, spec, feedback=verdict["logic_feedback"])
             run.update_status("dumping", f"Re-extracting after logic fix (round {round_num})")
             try:
                 run.run_dump()
@@ -920,7 +644,7 @@ Read the reference style dumps and screenshots, then write a fix script that ONL
 borders, fills, fonts, column widths, alignment, number formats. Do NOT touch cell values or formulas.
 Save the script to scripts/fix_visual_{v_round}.py and run it."""
 
-            await build(run, spec, checks_manifest, feedback=visual_prompt)
+            await build(run, spec, feedback=visual_prompt)
             run.update_status("dumping", f"Re-extracting after visual fix (round {v_round})")
             try:
                 run.run_dump()
@@ -928,8 +652,7 @@ Save the script to scripts/fix_visual_{v_round}.py and run it."""
                 print(f"  dump.py failed: {e}", file=sys.stderr)
 
             # Re-evaluate visuals only
-            mechanical_result = run_mechanical_checks(run, checks_manifest)
-            verdict = await evaluate(run, spec, checks_manifest, mechanical_result)
+            verdict = await evaluate(run, spec)
             grade = verdict["visual_grade"]
             visual_feedback = verdict["visual_feedback"]
             run.append_progress(f"Visual fix round {v_round}: grade={grade}")
