@@ -333,15 +333,61 @@ async def _cooldown(run: Run, next_agent: str) -> None:
 # ============================================================
 
 
-def _eval_passed(result: str) -> bool:
-    """Check if evaluator output indicates PASS."""
+def _parse_eval(result: str) -> dict:
+    """Parse evaluator output into logic pass/fail and visual grade."""
+    logic_passed = False
+    visual_grade = "?"
+    visual_feedback = []
+    logic_feedback = []
+
+    in_visual = False
     for line in result.strip().splitlines():
-        line = line.strip()
-        if line.upper().startswith("PASS"):
-            return True
-        if line.upper().startswith("FAIL"):
-            return False
-    return False  # No clear verdict = fail
+        stripped = line.strip()
+        upper = stripped.upper()
+
+        # Parse LOGIC verdict
+        if upper.startswith("LOGIC:"):
+            rest = upper.split(":", 1)[1].strip()
+            logic_passed = rest.startswith("PASS")
+            in_visual = False
+            continue
+
+        # Parse VISUAL verdict
+        if upper.startswith("VISUAL:"):
+            rest = stripped.split(":", 1)[1].strip()
+            if rest:
+                visual_grade = rest[0]  # First char is the letter grade
+            in_visual = True
+            continue
+
+        # Collect feedback lines
+        if stripped.startswith("- "):
+            if in_visual:
+                visual_feedback.append(stripped)
+            else:
+                logic_feedback.append(stripped)
+
+    # Fallback: old-style PASS/FAIL without LOGIC: prefix
+    if visual_grade == "?" and not logic_passed:
+        for line in result.strip().splitlines():
+            stripped = line.strip().upper()
+            if stripped.startswith("PASS"):
+                logic_passed = True
+                break
+            if stripped.startswith("FAIL"):
+                logic_passed = False
+                break
+
+    return {
+        "logic_passed": logic_passed,
+        "visual_grade": visual_grade,
+        "visual_feedback": "\n".join(visual_feedback),
+        "logic_feedback": "\n".join(logic_feedback),
+        "raw": result,
+    }
+
+
+MAX_VISUAL_FIX_ROUNDS = 2
 
 
 
@@ -481,8 +527,7 @@ Review the model thoroughly. Check formulas, formatting, cross-sheet references,
                              disallowed_tools=EVALUATOR_DISALLOWED,
                              model="claude-sonnet-4-6")
 
-    passed = _eval_passed(result)
-    return passed, result
+    return _parse_eval(result)
 
 
 async def main():
@@ -530,30 +575,65 @@ async def main():
         except Exception as e:
             print(f"  dump.py failed: {e}", file=sys.stderr)
 
-    # --- Phase 3: Evaluate → Fix loop ---
+    # --- Phase 3: Logic eval → Fix loop ---
+    visual_feedback = ""
     for round_num in range(1, MAX_EVAL_ROUNDS + 1):
-        passed, feedback = await evaluate(run, spec)
+        verdict = await evaluate(run, spec)
+        grade = verdict["visual_grade"]
+        visual_feedback = verdict["visual_feedback"]
 
-        if passed:
-            run.append_progress(f"Evaluation PASSED (round {round_num})")
-            run.update_status("complete", f"Done — model at {run.models_dir / 'model.xlsx'}")
-            print(f"\nOutput: {run.run_dir}")
-            return
+        run.append_progress(f"Eval round {round_num}: logic={'PASS' if verdict['logic_passed'] else 'FAIL'}, visual={grade}")
+        print(f"  Logic: {'PASS' if verdict['logic_passed'] else 'FAIL'} | Visual: {grade}")
 
-        run.append_progress(f"Evaluation FAILED (round {round_num})")
+        if verdict["logic_passed"]:
+            break
 
         if round_num < MAX_EVAL_ROUNDS:
-            await build(run, spec, feedback=feedback)
-            run.update_status("dumping", f"Re-extracting after fix (round {round_num})")
+            await build(run, spec, feedback=verdict["logic_feedback"])
+            run.update_status("dumping", f"Re-extracting after logic fix (round {round_num})")
+            try:
+                run.run_dump()
+            except Exception as e:
+                print(f"  dump.py failed: {e}", file=sys.stderr)
+    else:
+        # All logic rounds exhausted without passing
+        run.update_status("failed", f"Logic evaluation failed after {MAX_EVAL_ROUNDS} rounds")
+        run.append_progress(f"Model failed after {MAX_EVAL_ROUNDS} logic evaluation rounds")
+        print(f"\nFailed. Output: {run.run_dir}")
+        sys.exit(1)
+
+    # --- Phase 4: Visual fix loop (logic already passed) ---
+    if visual_feedback and grade not in ("A", "B"):
+        for v_round in range(1, MAX_VISUAL_FIX_ROUNDS + 1):
+            run.update_status("generating", f"Visual fix (round {v_round})")
+            visual_prompt = f"""## Visual Issues Only — DO NOT change any formulas or data
+
+{visual_feedback}
+
+Read the reference style dumps and screenshots, then write a fix script that ONLY changes formatting:
+borders, fills, fonts, column widths, alignment, number formats. Do NOT touch cell values or formulas.
+Save the script to scripts/fix_visual_{v_round}.py and run it."""
+
+            await build(run, spec, feedback=visual_prompt)
+            run.update_status("dumping", f"Re-extracting after visual fix (round {v_round})")
             try:
                 run.run_dump()
             except Exception as e:
                 print(f"  dump.py failed: {e}", file=sys.stderr)
 
-    run.update_status("failed", f"Evaluation failed after {MAX_EVAL_ROUNDS} rounds")
-    run.append_progress(f"Model failed after {MAX_EVAL_ROUNDS} evaluation rounds")
-    print(f"\nFailed. Output: {run.run_dir}")
-    sys.exit(1)
+            # Re-evaluate visuals only
+            verdict = await evaluate(run, spec)
+            grade = verdict["visual_grade"]
+            visual_feedback = verdict["visual_feedback"]
+            run.append_progress(f"Visual fix round {v_round}: grade={grade}")
+            print(f"  Visual after fix: {grade}")
+
+            if grade in ("A", "B"):
+                break
+
+    run.append_progress(f"Model complete (visual grade: {grade})")
+    run.update_status("complete", f"Done (visual: {grade}) — model at {run.models_dir / 'model.xlsx'}")
+    print(f"\nOutput: {run.run_dir}")
 
 
 if __name__ == "__main__":
