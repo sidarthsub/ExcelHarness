@@ -50,6 +50,8 @@ Produce `model_spec.json` with this structure:
 - **If no reference exists**, describe the financial logic clearly in domain terms instead of trying to specify every cell.
 - **Be explicit about assumptions.** If the brief uses shorthand financial terms, abbreviations, or compressed economic assumptions, spell out how you interpreted them.
 - **Order sheets by dependency.** The builder will build them in this order.
+- **Avoid intermediate sheets unless they are clearly necessary.** Do not add bridge, staging, roll-forward, or helper sheets just because the reference workbook has them. Prefer staying close to the sheets the user explicitly asked for.
+- **Preserve explicit copy requests.** If the user asked to copy a specific input sheet or tab, keep that as its own output sheet rather than folding it into another sheet.
 - **Group instructions belong in sheet notes**, not as separate sheets. If the user wants grouped rows, grouped entities, or summarized categories, note that in the relevant sheet's notes field.
 - **Circular references**: If sheets have circular formulas or iterative allocation logic, note it in the sheet's notes so the builder knows to use IFERROR wrapping and enable iterative calculation.
 - **Keep it short.** The spec should be ~1 page of JSON. If you're writing more than 2-3 sentences per sheet, you're being too granular.
