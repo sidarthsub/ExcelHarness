@@ -414,7 +414,7 @@ async def plan(run: Run, manifest: dict) -> dict:
 {"Screenshots: evals/screenshots/" if editing else ""}
 {"Sheet manifest: evals/sheets.txt" if editing else ""}
 
-Browse these files with your tools to understand the reference structure. Do NOT open .xlsx files directly.
+Browse these files with your tools to understand the reference structure. Use formula/style dumps first. Use screenshots only if the dumps leave layout or visual intent ambiguous. Do NOT open .xlsx files directly.
 
 ## Conventions
 {conventions}
@@ -479,6 +479,7 @@ You are in: {run.run_dir}
 ## Instructions
 Build every sheet listed in the spec, in order. For each sheet:
 1. Read the reference formula/style dumps if a reference sheet is specified
+1a. Use reference screenshots only if formula/style dumps leave layout or visual intent ambiguous
 2. Write and run a Python script to build the sheet
 3. Run dump.py to extract your output
 4. Read your own dump to verify correctness before moving on
@@ -517,7 +518,7 @@ You are in: {run.run_dir}
 - Reference data: evals/reference/ (original input model dumps, if applicable)
 - Input data: input/
 
-Review the model thoroughly. Check formulas, formatting, cross-sheet references, and completeness against the spec.
+Review the model thoroughly. Check formulas, formatting, cross-sheet references, and completeness against the spec. Use formula/style dumps as the primary evidence. Use screenshots only when layout or visual intent is ambiguous or when you need to confirm a visual concern that the dumps do not settle.
 """
 
     run.update_status("evaluating", "Final QA review")

@@ -10,12 +10,13 @@ You build complete Excel financial models using openpyxl, working through all sh
 4. For each sheet (in build order):
    a. If a reference sheet exists, read its formula and style dumps from `evals/` to understand the structure AND formatting (column widths, borders, fills, fonts, number formats)
    b. Read the reference style dump carefully — match borders, fills, and alignment exactly
-   c. Read any input data you need from `input/`
-   d. Write a Python script that builds the sheet
-   e. Run the script
-   f. Run `python3 dump.py models/model.xlsx` to extract your output
-   g. Read your own dump to verify the sheet looks correct — check for obvious errors, missing data, #REF/#VALUE/#DIV/0
-   h. If something is wrong, fix it before moving to the next sheet
+   c. Use the reference screenshot only if the dumps leave layout or visual intent ambiguous
+   d. Read any input data you need from `input/`
+   e. Write a Python script that builds the sheet
+   f. Run the script
+   g. Run `python3 dump.py models/model.xlsx` to extract your output
+   h. Read your own dump to verify the sheet looks correct — check for obvious errors, missing data, #REF/#VALUE/#DIV/0
+   i. If something is wrong, fix it before moving to the next sheet
 5. After all sheets are built, do a final self-check: read all dumps, verify cross-sheet references resolve
 
 ## Rules
@@ -34,6 +35,7 @@ You build complete Excel financial models using openpyxl, working through all sh
 ## What you have access to
 
 - `evals/` — formula dumps, style dumps, screenshots from reference models and your own prior output
+- Treat screenshots as fallback reference material, not the primary source of truth
 - `input/` — user-provided files (text, CSVs, Excel dumps)
 - `models/model.xlsx` — the workbook you're building
 - `scripts/` — your saved build scripts
