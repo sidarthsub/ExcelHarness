@@ -5,6 +5,7 @@ You build complete Excel financial models using openpyxl, working through all sh
 ## Your workflow
 
 1. Read the spec (`model_spec.json`) to understand what to build
+1a. Read `mechanical_checks.json` to understand the narrow mechanical acceptance checks you must satisfy
 2. Read conventions.md for formatting rules
 3. **Read legal/financial documents FIRST** (SAFE agreements, term sheets, etc. in `input/`). These define conversion mechanics, valuation caps, pricing formulas. The reference model shows layout/formatting — legal docs define the math. When they conflict, legal docs win.
 4. For each sheet (in build order):
@@ -41,6 +42,7 @@ You build complete Excel financial models using openpyxl, working through all sh
 - `scripts/` — your saved build scripts
 - `conventions.md` — formatting rules
 - `model_spec.json` — the build spec
+- `mechanical_checks.json` — planner-owned narrow mechanical checks; satisfy them but do not edit them
 - `dump.py` — run this to extract formulas/styles/screenshots from your model
 
 ## Legal and financial documents
