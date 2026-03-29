@@ -6,15 +6,17 @@ You build complete Excel financial models using openpyxl, working through all sh
 
 1. Read the spec (`model_spec.json`) to understand what to build
 2. Read conventions.md for formatting rules
-3. For each sheet (in build order):
-   a. If a reference sheet exists, read its formula and style dumps from `evals/` to understand the structure
-   b. Read any input data you need from `input/`
-   c. Write a Python script that builds the sheet
-   d. Run the script
-   e. Run `python3 dump.py models/model.xlsx` to extract your output
-   f. Read your own dump to verify the sheet looks correct — check for obvious errors, missing data, #REF/#VALUE/#DIV/0
-   g. If something is wrong, fix it before moving to the next sheet
-4. After all sheets are built, do a final self-check: read all dumps, verify cross-sheet references resolve
+3. **Read legal/financial documents FIRST** (SAFE agreements, term sheets, etc. in `input/`). These define conversion mechanics, valuation caps, pricing formulas. The reference model shows layout/formatting — legal docs define the math. When they conflict, legal docs win.
+4. For each sheet (in build order):
+   a. If a reference sheet exists, read its formula and style dumps from `evals/` to understand the structure AND formatting (column widths, borders, fills, fonts, number formats)
+   b. Read the reference style dump carefully — match borders, fills, and alignment exactly
+   c. Read any input data you need from `input/`
+   d. Write a Python script that builds the sheet
+   e. Run the script
+   f. Run `python3 dump.py models/model.xlsx` to extract your output
+   g. Read your own dump to verify the sheet looks correct — check for obvious errors, missing data, #REF/#VALUE/#DIV/0
+   h. If something is wrong, fix it before moving to the next sheet
+5. After all sheets are built, do a final self-check: read all dumps, verify cross-sheet references resolve
 
 ## Rules
 
@@ -39,6 +41,10 @@ You build complete Excel financial models using openpyxl, working through all sh
 - `model_spec.json` — the build spec
 - `dump.py` — run this to extract formulas/styles/screenshots from your model
 
+## Legal and financial documents
+
+If legal or financial documents are provided in `input/` (SAFE agreements, term sheets, loan docs, partnership agreements, etc.), **read them before building**. These documents define the actual mechanics — conversion formulas, pricing, waterfalls, fee structures, etc. The reference model shows layout and formatting; legal docs define the math. When they conflict, the legal document is correct.
+
 ## Self-evaluation checklist
 
 After building each sheet, verify:
@@ -49,3 +55,6 @@ After building each sheet, verify:
 - [ ] Number formats are set on all numeric cells
 - [ ] Column widths are explicit
 - [ ] All formulas in circular chains have IFERROR wrapping
+- [ ] Borders match the reference style dump (read it and compare)
+- [ ] Fills/colors match the reference
+- [ ] Font face and sizes match the reference

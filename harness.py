@@ -486,34 +486,51 @@ Review the model thoroughly. Check formulas, formatting, cross-sheet references,
 
 
 async def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 harness.py <brief> [input_path ...]")
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(description="Spreadsheet Harness v2")
+    parser.add_argument("brief", help="User brief describing what to build")
+    parser.add_argument("inputs", nargs="*", help="Input file/directory paths")
+    parser.add_argument("--run", help="Resume an existing run directory (skip ingest)")
+    parser.add_argument("--start-from", choices=["plan", "build", "eval"],
+                        default="plan", help="Skip earlier phases (requires --run)")
+    args = parser.parse_args()
 
-    brief = sys.argv[1]
-    input_paths = sys.argv[2:]
+    # --- Initialize or resume run ---
+    if args.run:
+        run = Run(args.brief, run_dir=args.run)
+        print(f"Resuming: {run.run_dir}")
+    else:
+        run = Run(args.brief)
+        print(f"Run: {run.run_dir}")
 
-    # --- Initialize run ---
-    run = Run(brief)
-    print(f"Run: {run.run_dir}")
-    run.update_status("ingesting", "Processing inputs")
-    manifest = ingest_inputs(run, input_paths)
-    run.append_progress(f"Ingested {len(manifest['files'])} files")
+    start = args.start_from
+
+    # --- Phase 0: Ingest ---
+    if start == "plan" and not args.run:
+        run.update_status("ingesting", "Processing inputs")
+        manifest = ingest_inputs(run, args.inputs)
+        run.append_progress(f"Ingested {len(manifest['files'])} files")
+    else:
+        manifest = {"files": [f.name for f in run.input_dir.iterdir() if not f.name.startswith(".")],
+                     "has_excel": any(f.suffix.lower() in INGESTABLE_EXCEL for f in run.input_dir.iterdir())}
 
     # --- Phase 1: Plan ---
-    spec = await plan(run, manifest)
+    if start in ("plan",):
+        spec = await plan(run, manifest)
+    else:
+        spec = json.loads((run.run_dir / "model_spec.json").read_text())
+        print(f"Loaded existing spec: {len(spec.get('sheets', []))} sheets")
 
     # --- Phase 2: Build ---
-    await build(run, spec)
+    if start in ("plan", "build"):
+        await build(run, spec)
+        run.update_status("dumping", "Extracting final model data")
+        try:
+            run.run_dump()
+        except Exception as e:
+            print(f"  dump.py failed: {e}", file=sys.stderr)
 
-    # --- Phase 3: Dump final model ---
-    run.update_status("dumping", "Extracting final model data")
-    try:
-        run.run_dump()
-    except Exception as e:
-        print(f"  dump.py failed: {e}", file=sys.stderr)
-
-    # --- Phase 4: Evaluate → Fix loop ---
+    # --- Phase 3: Evaluate → Fix loop ---
     for round_num in range(1, MAX_EVAL_ROUNDS + 1):
         passed, feedback = await evaluate(run, spec)
 
@@ -526,16 +543,13 @@ async def main():
         run.append_progress(f"Evaluation FAILED (round {round_num})")
 
         if round_num < MAX_EVAL_ROUNDS:
-            # Send feedback to builder for fixes
             await build(run, spec, feedback=feedback)
-            # Re-dump after fix
             run.update_status("dumping", f"Re-extracting after fix (round {round_num})")
             try:
                 run.run_dump()
             except Exception as e:
                 print(f"  dump.py failed: {e}", file=sys.stderr)
 
-    # All rounds exhausted
     run.update_status("failed", f"Evaluation failed after {MAX_EVAL_ROUNDS} rounds")
     run.append_progress(f"Model failed after {MAX_EVAL_ROUNDS} evaluation rounds")
     print(f"\nFailed. Output: {run.run_dir}")

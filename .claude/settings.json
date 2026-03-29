@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip3 list:*)",
+      "Bash(python3 dump.py \"input/Fig & 1011 Returns Analysis_v01.xlsx\")",
+      "Bash(python3 dump.py \"input/Sidekick Cap Table[50].xlsx\")",
+      "Bash(soffice --headless --convert-to txt:Text \"input/Think More Security - SAFE \\(Form\\)[28].pdf\" --outdir input/)",
+      "Bash(python3 -c \":*)",
+      "Bash(pip3 install:*)",
+      "Bash(timeout 15 python3 -c \":*)",
+      "Bash(python3 -c \"import json; s=json.load\\(open\\(''/Users/sidsub/Documents/ExcelHarness/runs/20260327-113520/status.json''\\)\\); print\\(f''Phase: {s[\"\"phase\"\"]} | Detail: {s.get\\(\"\"detail\"\",\"\"\"\"\\)}''\\)\")",
+      "Bash(python3 -c \"import harness; print\\(''OK''\\)\")",
+      "Bash(python3 harness.py --run runs/20260327-144510 --skip-planning --start-sprint 1 \"I want to make a Sidekick returns analysis based off the Fig one \\(exact format\\). Let''s start by modeling a Series A, which converts the outstanding SAFE. pre money is 60, 20 total raised, 1011 does 12, accomplice does 5, and Other Series A Investors do 3. The option pool should be expanded to 10% post money, including unallocated options from the prior round\")",
+      "Read(//Users/sidsub/Documents/ExcelHarness/**)",
+      "Read(//Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/claude_agent_sdk/**)",
+      "Read(//Users/sidsub/.claude/**)",
+      "Bash(kill 58993)",
+      "Bash(kill 58990)",
+      "Bash(xargs kill:*)",
+      "Bash(git checkout:*)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\(''/Users/sidsub/Documents/ExcelHarness/harness.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(python3 harness.py \"make a sidekick returns analysis based on the Fig one. Sheets should exactly match the fig formatting. Copy the Sidekick Cap Table sheet directly from the input Sidekick xlsx with its existing formatting — do not rebuild it. The analysis should have a modeled out Series A \\(60 pre, 20M total, 1011 12, Accomplice 5, Other Series A 3, option pool to 10% post money accounting for previously unallocated\\), Series B \\(150 pre, 30 total, Other Series B 15, remaining 15 split pro rata between last round participants, option pool to 7% post money\\), post A and B scenarios. Group small common holders together, group small investors together, and group the accomplice funds together with their new investments.\" \"runs/20260327-161224/input/\")"
+    ],
+    "additionalDirectories": [
+      "/Users/sidsub/Documents/ExcelHarness/runs/20260327-101456/input",
+      "/Users/sidsub/Documents/ExcelHarness/runs/20260327-142247/evals",
+      "/tmp",
+      "/private/tmp"
+    ]
+  }
+}

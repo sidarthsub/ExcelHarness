@@ -1,0 +1,69 @@
+---
+title: Financial Model Adversarial Harness
+---
+flowchart TD
+    subgraph INPUT["User Input"]
+        brief["'Build a 3-statement LBO, $500M, 5x leverage, 5yr hold'"]
+    end
+
+    subgraph PLANNER["Planner Agent"]
+        direction LR
+        p1["Reads brief + conventions.md"]
+        p2["Generates model_spec.json + AGENTS.md"]
+        p1 --> p2
+    end
+
+    subgraph LOOP["Adversarial Loop (per sprint)"]
+        direction TB
+
+        subgraph GEN["Generator Agent"]
+            g1["Reads sprint contract + conventions"]
+            g2["Builds one sheet via openpyxl"]
+            g3["Saves model.xlsx"]
+            g1 --> g2 --> g3
+        end
+
+        subgraph DUMP["dump.py (~30 lines)"]
+            direction LR
+            d1["values/\npandas → text tables\none file per sheet"]
+            d2["formulas/\nopenpyxl → one line per cell\ncoordinate: content"]
+            d3["screenshots/\nlibreoffice → PNG\none image per sheet"]
+        end
+
+        subgraph EVAL["Evaluator Agent (fresh context, has tool access)"]
+            e1["grep formulas/ for hardcodes"]
+            e2["grep formulas/ for cross-sheet refs"]
+            e3["Read screenshots for layout review"]
+            e4["Reason about whether numbers make sense"]
+            e5{"PASS / FAIL"}
+            e1 --> e5
+            e2 --> e5
+            e3 --> e5
+            e4 --> e5
+        end
+
+        GEN --> DUMP --> EVAL
+        e5 -->|"FAIL + feedback"| GEN
+    end
+
+    subgraph MEMORY["Memory Layer (persists across sessions)"]
+        direction LR
+        m1["AGENTS.md\n~100 lines, TOC"]
+        m2["model_spec.json\nsheets, sprints, status"]
+        m3["conventions.md\nseeded, grows over time"]
+        m4["progress.txt\nappend-only session log"]
+        m5["model.xlsx\ngit-versioned"]
+    end
+
+    brief --> PLANNER
+    PLANNER -->|"sprint contract"| LOOP
+    e5 -->|"PASS → git commit"| MEMORY
+    MEMORY -->|"session start: orient"| PLANNER
+
+    style INPUT fill:#1a1a2e,stroke:#333,color:#fff
+    style PLANNER fill:#1a2233,stroke:#4a6fa5,color:#7ba3d4
+    style GEN fill:#1a2a1a,stroke:#5a8a5a,color:#8bc48b
+    style DUMP fill:#1a1a28,stroke:#5a5a8a,color:#9a9ad0
+    style EVAL fill:#2a1a1a,stroke:#a55a4a,color:#d48b7b
+    style MEMORY fill:#1a1a28,stroke:#5a4a8a,color:#a0a0d0
+    style LOOP fill:#0d0d0d,stroke:#a55a4a,color:#d48b7b

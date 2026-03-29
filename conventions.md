@@ -39,10 +39,16 @@
 - Ratios/multiples: `0.0x` or `#,##0.00x`
 - Apply number formats to ALL numeric cells — never leave as "General"
 
+### Font Colors (MANDATORY — overrides reference model)
+- **Blue (`#0000FF`)**: Hardcoded editable inputs only (investment amounts, valuations, dates the user would change)
+- **Green (`#008000`)**: Cross-sheet references (any formula that pulls from another sheet)
+- **Black**: Everything else (labels, intra-sheet formulas, calculated values)
+- This rule is absolute. If the reference model uses different color conventions, ignore the reference and follow these rules.
+
 ### Cell Fills
-- Input/assumption cells: light green fill (`#C6EFCE`) or light blue (`#BDD7EE`) — visually distinguish inputs from calculations
+- Input/assumption cells: light yellow fill (`#FFFFCC`) to highlight editable inputs
 - Header rows: light gray fill (`#D9D9D9`) if used in reference
-- Match the reference model's color scheme exactly when one is provided
+- Match the reference model's fill scheme when one is provided
 
 ### Borders
 - Thin bottom border above subtotal rows
