@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Dump an Excel workbook to flat, grepable TSV files and per-sheet screenshots."""
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -11,7 +12,9 @@ from pathlib import Path
 from string import ascii_uppercase
 
 import openpyxl
+from openpyxl.formula import Tokenizer
 from openpyxl.styles.colors import COLOR_INDEX
+from openpyxl.utils.cell import range_boundaries
 from openpyxl.worksheet.formula import DataTableFormula
 from pdf2image import convert_from_path
 from PIL import Image
@@ -146,6 +149,124 @@ def col_letter(n: int) -> str:
     return "".join(reversed(result))
 
 
+def _parse_sheet_ref(ref: str, current_sheet: str) -> tuple[str, str]:
+    if "!" not in ref:
+        return current_sheet, ref.replace("$", "")
+    sheet_name, cell_ref = ref.rsplit("!", 1)
+    sheet_name = sheet_name.strip()
+    if sheet_name.startswith("'") and sheet_name.endswith("'"):
+        sheet_name = sheet_name[1:-1].replace("''", "'")
+    return sheet_name, cell_ref.replace("$", "")
+
+
+def _expand_range_ref(ref: str, current_sheet: str) -> dict:
+    sheet_name, cell_ref = _parse_sheet_ref(ref, current_sheet)
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(cell_ref)
+    except ValueError:
+        return {
+            "sheet": sheet_name,
+            "ref": cell_ref,
+            "kind": "unsupported",
+            "expanded": [],
+        }
+
+    expanded = [
+        f"{col_letter(col)}{row}"
+        for row in range(min_row, max_row + 1)
+        for col in range(min_col, max_col + 1)
+    ]
+    kind = "cell" if len(expanded) == 1 else "range"
+    return {
+        "sheet": sheet_name,
+        "ref": cell_ref,
+        "kind": kind,
+        "expanded": expanded,
+    }
+
+
+def _analyze_formula(formula: str, current_sheet: str) -> dict:
+    tokenizer = Tokenizer(formula)
+    functions = []
+    refs = []
+    token_dump = []
+    for token in tokenizer.items:
+        token_dump.append(
+            {
+                "type": token.type,
+                "subtype": token.subtype,
+                "value": token.value,
+            }
+        )
+        if token.type == "FUNC" and token.subtype == "OPEN":
+            functions.append(token.value[:-1].upper())
+        elif token.type == "OPERAND" and token.subtype == "RANGE":
+            refs.append(_expand_range_ref(token.value, current_sheet))
+
+    dependencies = []
+    seen = set()
+    for ref in refs:
+        for cell_ref in ref["expanded"]:
+            key = (ref["sheet"], cell_ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            dependencies.append(
+                {
+                    "sheet": ref["sheet"],
+                    "cell": cell_ref,
+                    "via": ref["ref"],
+                }
+            )
+
+    return {
+        "functions": functions,
+        "references": refs,
+        "dependencies": dependencies,
+        "tokens": token_dump,
+    }
+
+
+def _tarjan_scc(graph: dict[str, set[str]]) -> list[list[str]]:
+    index = 0
+    stack = []
+    indices = {}
+    lowlinks = {}
+    on_stack = set()
+    components = []
+
+    def strongconnect(node: str) -> None:
+        nonlocal index
+        indices[node] = index
+        lowlinks[node] = index
+        index += 1
+        stack.append(node)
+        on_stack.add(node)
+
+        for neighbor in graph.get(node, set()):
+            if neighbor not in indices:
+                strongconnect(neighbor)
+                lowlinks[node] = min(lowlinks[node], lowlinks[neighbor])
+            elif neighbor in on_stack:
+                lowlinks[node] = min(lowlinks[node], indices[neighbor])
+
+        if lowlinks[node] == indices[node]:
+            component = []
+            while True:
+                other = stack.pop()
+                on_stack.remove(other)
+                component.append(other)
+                if other == node:
+                    break
+            components.append(sorted(component))
+
+    for node in sorted(graph):
+        if node not in indices:
+            strongconnect(node)
+
+    return components
+
+
 def render_screenshots(xlsx_path: Path, sheet_names: list[str], out_dir: Path, source_tag: str = "") -> None:
     """Export per-sheet PNGs via LibreOffice PDF export + pdf2image."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -205,13 +326,20 @@ def dump(xlsx_path: Path) -> None:
     else:
         source_tag = f"[{xlsx_path.stem}] "
 
-    # 1. Formulas: compact format with row templates for repeated formulas
+    # 1. Formulas: compact text dump plus structured JSON for machine evaluation
     formulas_dir = EVALS / "formulas"
     formulas_dir.mkdir(parents=True, exist_ok=True)
+    formulas_json_dir = EVALS / "formulas_json"
+    formulas_json_dir.mkdir(parents=True, exist_ok=True)
     wb = openpyxl.load_workbook(xlsx_path)
+    wb_values = openpyxl.load_workbook(xlsx_path, data_only=True)
     theme_palette = _parse_theme_palette(wb)
     sheet_names = [ws.title for ws in wb.worksheets]
+    all_formula_nodes = set()
+    structured_by_sheet = {}
+    global_function_counts = defaultdict(int)
     for ws in wb.worksheets:
+        values_ws = wb_values[ws.title]
         max_col = ws.max_column or 1
         actual_max_row = 1
         for r in range(ws.max_row or 1, 0, -1):
@@ -221,6 +349,7 @@ def dump(xlsx_path: Path) -> None:
         max_row = actual_max_row
 
         lines = []
+        structured_formulas = []
         for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
             row_num = row[0].row
             # Collect non-empty cells
@@ -285,6 +414,112 @@ def dump(xlsx_path: Path) -> None:
 
         (formulas_dir / f"{source_tag}{ws.title}.txt").write_text("\n".join(lines))
 
+        for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
+            for cell in row:
+                if not (isinstance(cell.value, str) and cell.value.startswith("=")):
+                    continue
+                node_id = f"{ws.title}!{cell.coordinate}"
+                all_formula_nodes.add(node_id)
+                analysis = _analyze_formula(cell.value, ws.title)
+                for fn_name in analysis["functions"]:
+                    global_function_counts[fn_name] += 1
+                cached_value = values_ws[cell.coordinate].value
+                structured_formulas.append(
+                    {
+                        "cell": cell.coordinate,
+                        "formula": cell.value,
+                        "cached_value": cached_value,
+                        "functions": analysis["functions"],
+                        "references": analysis["references"],
+                        "dependencies": analysis["dependencies"],
+                        "tokens": analysis["tokens"],
+                    }
+                )
+
+        structured_by_sheet[ws.title] = structured_formulas
+
+    dependency_graph = {node: set() for node in all_formula_nodes}
+    for sheet_name, entries in structured_by_sheet.items():
+        for entry in entries:
+            node_id = f"{sheet_name}!{entry['cell']}"
+            for dep in entry["dependencies"]:
+                dep_node = f"{dep['sheet']}!{dep['cell']}"
+                if dep_node in all_formula_nodes:
+                    dependency_graph[node_id].add(dep_node)
+
+    iterative_components = []
+    component_ids = {}
+    for component in _tarjan_scc(dependency_graph):
+        if len(component) == 1 and component[0] not in dependency_graph.get(component[0], set()):
+            continue
+        comp_id = f"iter_{len(iterative_components) + 1}"
+        iterative_components.append({"id": comp_id, "cells": component})
+        for node in component:
+            component_ids[node] = comp_id
+
+    # Collect literal cell values referenced by formulas
+    literal_cells_by_sheet = defaultdict(dict)
+    for sheet_name, entries in structured_by_sheet.items():
+        for entry in entries:
+            for dep in entry["dependencies"]:
+                dep_node = f"{dep['sheet']}!{dep['cell']}"
+                if dep_node not in all_formula_nodes:
+                    dep_sheet = dep["sheet"]
+                    dep_cell = dep["cell"]
+                    if dep_cell not in literal_cells_by_sheet[dep_sheet]:
+                        try:
+                            vs = wb_values[dep_sheet]
+                            val = vs[dep_cell].value
+                            if val is not None:
+                                literal_cells_by_sheet[dep_sheet][dep_cell] = val
+                        except (KeyError, AttributeError):
+                            pass
+            # Also collect literal cells from expanded range references
+            for ref in entry.get("references", []):
+                ref_sheet = ref.get("sheet", sheet_name)
+                for exp_cell in ref.get("expanded", []):
+                    exp_node = f"{ref_sheet}!{exp_cell}"
+                    if exp_node not in all_formula_nodes and exp_cell not in literal_cells_by_sheet[ref_sheet]:
+                        try:
+                            vs = wb_values[ref_sheet]
+                            val = vs[exp_cell].value
+                            if val is not None:
+                                literal_cells_by_sheet[ref_sheet][exp_cell] = val
+                        except (KeyError, AttributeError):
+                            pass
+
+    for sheet_name, entries in structured_by_sheet.items():
+        for entry in entries:
+            node_id = f"{sheet_name}!{entry['cell']}"
+            entry["iterative_component"] = component_ids.get(node_id)
+        # Serialize literal cells with consistent types
+        literals = {}
+        for cell_ref, val in sorted(literal_cells_by_sheet.get(sheet_name, {}).items()):
+            if isinstance(val, (int, float)):
+                literals[cell_ref] = val
+            elif isinstance(val, str):
+                literals[cell_ref] = val
+            else:
+                literals[cell_ref] = str(val)
+        payload = {
+            "sheet": sheet_name,
+            "formula_cells": entries,
+            "literal_cells": literals,
+        }
+        (formulas_json_dir / f"{source_tag}{sheet_name}.json").write_text(
+            json.dumps(payload, indent=2, default=str)
+        )
+
+    workbook_formula_summary = {
+        "workbook": xlsx_path.name,
+        "sheet_names": sheet_names,
+        "functions_used": dict(sorted(global_function_counts.items())),
+        "iterative_components": iterative_components,
+    }
+    (formulas_json_dir / f"{source_tag}workbook.json").write_text(
+        json.dumps(workbook_formula_summary, indent=2, default=str)
+    )
+
     # 2. Styles: formatting metadata per sheet
     styles_dir = EVALS / "styles"
     styles_dir.mkdir(parents=True, exist_ok=True)
@@ -342,16 +577,23 @@ def dump(xlsx_path: Path) -> None:
             """Style token tuple WITHOUT borders."""
             parts = []
             if cell.font:
+                has_content = cell.value is not None
                 if cell.font.bold:
                     parts.append("bold")
                 if cell.font.underline:
                     parts.append(f"underline:{cell.font.underline}")
-                if cell.font.size and cell.font.size != 11:
+                # Always surface font family/size on populated cells so theme-font
+                # fallback (e.g. Calibri 11 minor) is visible to the evaluator.
+                if cell.font.size and (has_content or cell.font.size != 11):
                     parts.append(f"size:{cell.font.size}")
-                if cell.font.name and cell.font.name != "Calibri":
+                if cell.font.name and (has_content or cell.font.name != "Calibri"):
                     parts.append(f"font:{cell.font.name}")
+                if getattr(cell.font, "scheme", None) and (
+                    has_content or getattr(cell.font, "scheme", None) != "minor"
+                ):
+                    parts.append(f"scheme:{cell.font.scheme}")
                 font_color = _color_token(cell.font.color, theme_palette)
-                if font_color:
+                if font_color and (has_content or font_color != "theme(1,#000000)"):
                     parts.append(f"color:{font_color}")
             if cell.fill and cell.fill.patternType and cell.fill.patternType != "none":
                 fill_color = _color_token(cell.fill.fgColor, theme_palette)
@@ -427,6 +669,7 @@ def dump(xlsx_path: Path) -> None:
 
         # Pass 1: collect base styles (no borders) and borders separately
         style_grid = {}  # (row, col) -> base style token tuple
+        font_grid = {}  # (row, col) -> font signature for populated cells
         alignment_grid = {}  # (row, col) -> alignment signature
         border_grid = {}  # (row, col) -> {side: {style, color}}
         for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
@@ -434,6 +677,20 @@ def dump(xlsx_path: Path) -> None:
                 base = _cell_base_style_parts(cell)
                 if base:
                     style_grid[(cell.row, cell.column)] = base
+                if cell.value is not None and cell.font:
+                    font_parts = []
+                    if cell.font.name:
+                        font_parts.append(f"font:{cell.font.name}")
+                    if cell.font.size:
+                        font_parts.append(f"size:{cell.font.size}")
+                    if getattr(cell.font, "scheme", None):
+                        font_parts.append(f"scheme:{cell.font.scheme}")
+                    if cell.font.bold:
+                        font_parts.append("bold")
+                    if cell.font.underline:
+                        font_parts.append(f"underline:{cell.font.underline}")
+                    if font_parts:
+                        font_grid[(cell.row, cell.column)] = " ".join(font_parts)
                 alignment = _cell_alignment_parts(cell)
                 if alignment:
                     alignment_grid[(cell.row, cell.column)] = " ".join(alignment)
@@ -460,6 +717,11 @@ def dump(xlsx_path: Path) -> None:
         if alignment_grid:
             lines.append("\n## Alignment Map")
             for _, _, line in _merge_rectangles(alignment_grid):
+                lines.append(line)
+
+        if font_grid:
+            lines.append("\n## Font Map")
+            for _, _, line in _merge_rectangles(font_grid):
                 lines.append(line)
 
         # Pass 3: map cells to style IDs and merge into 2D rectangles
