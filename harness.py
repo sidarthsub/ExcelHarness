@@ -43,6 +43,12 @@ PLANNER_ALLOWED = [
     "Bash(ls*)", "Bash(cat*)", "Bash(wc*)",
 ]
 
+SCOPER_ALLOWED = [
+    "Read", "Glob", "Grep",
+    "Write(scope.json)", "Edit(scope.json)",
+    "Bash(ls*)", "Bash(cat*)", "Bash(wc*)",
+]
+
 BUILDER_ALLOWED = [
     "Read", "Glob", "Grep",
     "Write(scripts/*)", "Write(models/*)",
@@ -122,7 +128,7 @@ class Run:
         self.status_path.write_text(json.dumps(status, indent=2))
         icon = {"planning": "📋", "generating": "🔨", "dumping": "📸",
                 "evaluating": "🔍", "passed": "✅", "failed": "❌",
-                "complete": "🏁", "ingesting": "📥"}.get(phase, "⏳")
+                "complete": "🏁", "ingesting": "📥", "scoping": "🧭"}.get(phase, "⏳")
         print(f"\n{icon}  [{phase.upper()}] {detail}")
 
     def log_activity(self, agent: str, kind: str, text: str) -> None:
@@ -419,17 +425,70 @@ def _issues_to_feedback(issues: list[dict]) -> str:
 MAX_VISUAL_FIX_ROUNDS = 2
 
 
+async def scope_inputs(run: Run, manifest: dict) -> dict:
+    """Scoper: triages input/reference files into a structural scope map."""
+    system_prompt = load_prompt("scoper")
+    editing = manifest["has_excel"]
+    files_list = "\n".join(f"- {f}" for f in manifest["files"])
 
-async def plan(run: Run, manifest: dict) -> dict:
+    prompt = f"""## User Brief
+{run.brief}
+
+## Mode: {"EDIT EXISTING MODEL" if editing else "NEW MODEL"}
+{"An existing .xlsx was provided and reference data has been extracted to evals/." if editing else "Build from scratch."}
+
+## Input Files (in input/)
+{files_list}
+
+## Reference Data (in evals/)
+{"Formula dumps: evals/formulas/" if editing else "No reference model provided."}
+{"Style dumps: evals/styles/" if editing else ""}
+{"Screenshots: evals/screenshots/" if editing else ""}
+{"Sheet manifest: evals/sheets.txt" if editing else ""}
+
+Write scope.json to {run.run_dir / "scope.json"}.
+Keep it structural and concise. Do not write the build spec.
+"""
+
+    run.update_status("scoping", "Triaging inputs and reference scope")
+    await _cooldown(run, "scoper")
+    await run_agent(prompt, system_prompt, SCOPER_ALLOWED,
+                    cwd=str(run.run_dir), run=run, agent_name="scoper",
+                    model="claude-sonnet-4-6")
+
+    scope_path = run.run_dir / "scope.json"
+    if not scope_path.exists():
+        print("Scoper failed to generate scope.json", file=sys.stderr)
+        sys.exit(1)
+
+    scope = json.loads(scope_path.read_text())
+    run.append_progress(f"Scoper done: {len(scope.get('requested_outputs', []))} outputs scoped")
+    return scope
+
+
+
+async def plan(run: Run, manifest: dict, scope: dict | None = None) -> dict:
     """Planner: brief + inputs → high-level spec."""
     conventions = read_file(run.run_dir / "conventions.md")
     system_prompt = load_prompt("planner_v2")
 
     files_list = "\n".join(f"- {f}" for f in manifest["files"])
     editing = manifest["has_excel"]
+    scope_section = ""
+    if scope:
+        scope_section = f"""
+## Precomputed Scope (in scope.json)
+```json
+{json.dumps(scope, indent=2)}
+```
+
+Read `scope.json` first and use it to guide which files to inspect. Still verify the important files yourself before writing the spec.
+"""
 
     prompt = f"""## User Brief
 {run.brief}
+
+{scope_section}
 
 ## Mode: {"EDIT EXISTING MODEL" if editing else "NEW MODEL"}
 {"An existing .xlsx was provided and is at models/model.xlsx. Reference data has been extracted to evals/." if editing else "Build from scratch."}
@@ -591,7 +650,8 @@ async def main():
 
     # --- Phase 1: Plan ---
     if start in ("plan",):
-        spec = await plan(run, manifest)
+        scope = await scope_inputs(run, manifest)
+        spec = await plan(run, manifest, scope)
     else:
         spec = json.loads((run.run_dir / "model_spec.json").read_text())
         print(f"Loaded existing spec: {len(spec.get('sheets', []))} sheets")
