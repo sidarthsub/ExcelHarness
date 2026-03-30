@@ -742,7 +742,7 @@ async def main():
         sys.exit(1)
 
     # --- Phase 4: Visual fix loop (logic already passed) ---
-    if visual_feedback and grade not in ("A",):
+    if visual_feedback and grade != "A":
         for v_round in range(1, MAX_VISUAL_FIX_ROUNDS + 1):
             run.update_status("generating", f"Visual fix (round {v_round})")
             visual_prompt = f"""## Visual Issues Only — DO NOT change any formulas or data
@@ -772,7 +772,7 @@ Save the script to scripts/fix_visual_{v_round}.py and run it."""
             run.append_progress(f"Visual fix round {v_round}: grade={grade}")
             print(f"  Visual after fix: {grade}")
 
-            if grade in ("A", "B"):
+            if grade == "A":
                 break
 
     run.append_progress(f"Model complete (visual grade: {grade})")

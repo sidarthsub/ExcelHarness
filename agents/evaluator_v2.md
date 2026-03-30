@@ -54,10 +54,12 @@ For every builder sheet, read the builder's style dump (`evals/styles/<sheet>.tx
 
 - **`## Border Specs`** — every `vline` and `hline` entry must match the reference exactly. A missing left or right edge on any column group header box is a C or lower.
 - **`## Structural Regions`** — compare every region's border description. Missing medium borders, wrong border sides (e.g. top+bottom only instead of all four sides), or misplaced box regions are C or lower.
-- **Font** — face, size, and bold must match. Wrong font family is D.
-- **Fill** — section header fills (yellow, grey, etc.) must be present and on the correct rows.
+- **Font** — face, size, and bold must match. Wrong font family on any analysis sheet is D. Mixed font families across analysis sheets are D.
+- **Fill / color** — section header fills and semantic colors (inputs, cross-sheet references, totals/header accents) must be present and on the correct rows/cells. Missing semantic colors across a region is C or lower; widespread color loss is D.
 - **Number formats** — percentage, dollar, decimal places must match the reference.
 - **Column widths** — widths must be within ~1 unit of reference. Columns that are clearly too wide or too narrow are a warning.
+- **Alignment / span behavior** — header/title spans must match the reference. Broken `centerContinuous` / center-across-selection behavior in visible title or header bands is D.
+- **Style granularity** — if the builder collapses visibly distinct reference styles into a much coarser style table, grade C or lower unless the screenshots prove there is no visible regression.
 
 ### Step 2 — Screenshot comparison
 Compare the builder's screenshot (`evals/screenshots/`) against the reference screenshot (`evals/reference/screenshots/`) for every sheet:
@@ -69,6 +71,8 @@ Compare the builder's screenshot (`evals/screenshots/`) against the reference sc
 - Borders: do the box patterns around column group headers match? Check all four sides of every boxed region.
 - Alignment: are labels left-aligned and numbers right-aligned consistently?
 - Font: same face and size as reference?
+- Density: does the sheet occupy space similarly, or does it have obvious whitespace drift / collapsed sections / missing visual structure?
+- Presentation clutter: are there visible placeholder zeros, repeated zero-only rows, or unfinished-looking sections that the reference does not show? Widespread visible zero clutter is D.
 
 ## Output format
 
@@ -105,11 +109,11 @@ Return JSON only. Do not wrap it in markdown fences. Use this exact shape:
 
 **LOGIC**: Only CRITICAL issues cause FAIL. Wrong numbers, broken formulas, missing sheets, incorrect financial logic, or mismatch against explicit spec/source-doc mechanics are CRITICAL. Formatting issues are NEVER critical.
 
-**VISUAL**: Letter grade for how closely the model matches the reference visually. Grade strictly — the default should be C unless you can justify higher. An A means you have verified every border, fill, font, and alignment against the reference dumps and found no differences.
-- A: Every border box complete (all 4 sides), fills correct, fonts match, alignments match, no meaningful differences from reference
-- B: At most 1-2 trivial differences (e.g. single 1pt font delta, one missing fill on one cell) — justify specifically why it's not a C
-- C: Any incomplete border pattern (e.g. top+bottom but missing left/right), any missing section fill, wrong column alignment, or any structural visual difference from reference
-- D: Multiple border classes wrong, major fills missing, or looks unprofessional compared to reference
+**VISUAL**: Letter grade for how closely the model matches the reference visually. Grade strictly — the default should be C unless you can justify higher. An A means you have verified every border, fill, font, alignment, and screenshot layout against the reference and found no meaningful differences.
+- A: No meaningful visual differences from reference
+- B: Exactly 1 trivial difference on 1 sheet only, with all other sheets visually matching the reference. If issues appear on multiple sheets, B is not allowed.
+- C: Any non-trivial visible mismatch on any sheet, including incomplete border patterns, missing section fills, wrong alignment, width/layout drift, or clear style-table mismatch with visible impact
+- D: Multiple non-trivial visual mismatches, wrong font family, inconsistent fonts across sheets, broken header/title spanning, widespread missing colors/fills, visible placeholder-zero clutter, or an overall unfinished / unprofessional appearance relative to reference
 - F: No formatting applied
 
 **When in doubt, grade down.** If you cannot confirm a border or fill matches the reference because the dump is ambiguous, check the screenshot — and if still uncertain, give the lower grade.
