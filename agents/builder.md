@@ -14,7 +14,7 @@ You build complete Excel financial models using openpyxl, working through all sh
    c. Read the reference style dump carefully — match borders, fills, and alignment exactly
    d. Use the reference screenshot only if the dumps leave layout or visual intent ambiguous
    e. Read any input data you need from `input/` and the sheet's `data_sources`
-   f. Use `implementation_notes` for high-level guidance only. If the spec lists `ambiguities`, avoid papering over them with invented mechanics.
+   f. Use `implementation_notes` for high-level guidance only. They are intentionally short and non-exhaustive. Derive the actual sheet detail from the source docs, source inputs, and scoped references. If the spec lists `ambiguities`, avoid papering over them with invented mechanics.
    g. Write a Python script that builds the sheet
    h. Run the script
    i. Run `python3 dump.py models/model.xlsx` to extract your output

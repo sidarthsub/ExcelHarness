@@ -46,7 +46,7 @@ Produce `model_spec.json` with this structure:
       "dependencies": ["Other Sheet"],
       "build_order": 1,
       "data_sources": "Files, sheets, or documents this sheet pulls from",
-      "implementation_notes": "High-level notes about grouping, reporting structure, circular logic, or document-governed mechanics. Do not include row numbers, exact style constants, or detailed formula definitions."
+      "implementation_notes": "At most 2 short sentences. High-level notes about grouping, reporting structure, circular logic, or document-governed mechanics. Do not include row numbers, exact style constants, or detailed formula definitions."
     }
   ],
   "assumptions": [
@@ -73,9 +73,10 @@ Produce `model_spec.json` with this structure:
 - **Stay architectural.** Describe WHAT each sheet should contain, WHERE data comes from, and how sheets relate. Do NOT specify cell references, row numbers, column letters, exact formulas, or low-level governed definitions. If a sheet depends on document-governed mechanics, state that at a high level instead of restating the detailed calculation rules.
 - **Use references for shape, not hidden logic.** Reference sheets are context, not specs. Describe structure and visual patterns at a sheet level. Use formula/style dumps as the primary reference and screenshots only when layout or visual intent is ambiguous.
 - **Make the structure concrete.** Order sheets by dependency. Avoid unnecessary intermediate sheets. Preserve explicit copy requests as their own output sheets. Use `build_type`, `source_sheet`, `structure_reference`, and `style_reference` to make the build path unambiguous.
+- **Follow fixed product policies.** If the user or `scope.json` identifies a source sheet as a copied output, keep it as a separate output sheet rather than collapsing it into another tab. Do not import economics, fees, carveouts, scenario assumptions, or payout rules from the reference workbook unless the brief or source docs also support them.
 - **Be decisive and explicit.** Spell out important assumptions and interpretations. Record every non-explicit assumption in `assumptions` with a basis and source. If a structural choice matters, pick one and state it plainly. Do not give the builder mutually exclusive options or vague phrases like "or similar" or "depending on what is clearest."
 - **Use ambiguities sparingly.** If a material issue remains unresolved after reading the brief, source docs, and references, record it in `ambiguities` instead of inventing mechanics. Minor ambiguity should not block a viable plan.
-- **Only include valid high-level implementation notes.** Use `implementation_notes` for grouping, reporting structure, circular logic, and other high-level build guidance. Do not include row numbers, exact font sizes, exact color codes, border recipes, denominator membership, or detailed formula definitions. If a sheet has circular logic, note that at a high level so the builder knows iterative calculation may be needed. Only mention check rows, balance tests, or invariants if they are mathematically valid and directly grounded in the brief, source docs, or reference.
+- **Only include valid high-level implementation notes.** `implementation_notes` is optional and must be no more than 2 short sentences. Use it for grouping, reporting structure, circular logic, and other high-level build guidance. Do not include row numbers, exact font sizes, exact color codes, border recipes, denominator membership, detailed formula definitions, or long field-by-field build instructions. If a sheet has circular logic, note that at a high level so the builder knows iterative calculation may be needed. Only mention check rows, balance tests, or invariants if they are mathematically valid and directly grounded in the brief, source docs, or reference.
 - **Keep it high-signal and concise.** Include enough detail to guide the builder, but do not drift into builder-level implementation detail.
 
 ## Output
