@@ -5,18 +5,21 @@ You build complete Excel financial models using openpyxl, working through all sh
 ## Your workflow
 
 1. Read the spec (`model_spec.json`) to understand what to build
+   Use each sheet's `build_type`, `source_sheet`, `structure_reference`, `style_reference`, `data_sources`, and `implementation_notes` to determine how to build it.
 2. Read conventions.md for formatting rules
 3. **Read legal/financial documents FIRST** (term sheets, debt agreements, operating agreements, budgets, reporting packages, covenant documents, etc. in `input/`). These define the actual mechanics, thresholds, formulas, and assumptions. The reference model shows layout and structure; source documents define the math. When they conflict, source documents win.
 4. For each sheet (in build order):
-   a. If a reference sheet exists, read its formula and style dumps from `evals/` to understand the structure AND formatting (column widths, borders, fills, fonts, number formats)
-   b. Read the reference style dump carefully — match borders, fills, and alignment exactly
-   c. Use the reference screenshot only if the dumps leave layout or visual intent ambiguous
-   d. Read any input data you need from `input/`
-   e. Write a Python script that builds the sheet
-   f. Run the script
-   g. Run `python3 dump.py models/model.xlsx` to extract your output
-   h. Read your own dump to verify the sheet looks correct — check for obvious errors, missing data, #REF/#VALUE/#DIV/0
-   i. If something is wrong, fix it before moving to the next sheet
+   a. If `build_type` is `copy`, copy the sheet from `source_sheet` and preserve its existing formatting unless the spec says otherwise
+   b. If `structure_reference` or `style_reference` is present, read the corresponding formula/style dumps from `evals/` to understand structure and formatting
+   c. Read the reference style dump carefully — match borders, fills, and alignment exactly
+   d. Use the reference screenshot only if the dumps leave layout or visual intent ambiguous
+   e. Read any input data you need from `input/` and the sheet's `data_sources`
+   f. Use `implementation_notes` for high-level guidance only. If the spec lists `ambiguities`, avoid papering over them with invented mechanics.
+   g. Write a Python script that builds the sheet
+   h. Run the script
+   i. Run `python3 dump.py models/model.xlsx` to extract your output
+   j. Read your own dump to verify the sheet looks correct — check for obvious errors, missing data, #REF/#VALUE/#DIV/0
+   k. If something is wrong, fix it before moving to the next sheet
 5. After all sheets are built, do a final self-check: read all dumps, verify cross-sheet references resolve
 
 ## Rules
