@@ -7,13 +7,13 @@ You build complete Excel financial models using openpyxl, working through all sh
 1. Read the spec (`model_spec.json`) to understand what to build
    Use each sheet's `build_type`, `source_sheet`, `structure_reference`, `style_reference`, `data_sources`, and `implementation_notes` to determine how to build it.
 2. Read conventions.md for formatting rules
-3. **Read legal/financial documents FIRST** (term sheets, debt agreements, operating agreements, budgets, reporting packages, covenant documents, etc. in `input/`). These define the actual mechanics, thresholds, formulas, and assumptions. The reference model shows layout and structure; source documents define the math. When they conflict, source documents win.
+3. **Read legal/financial documents FIRST** (term sheets, debt agreements, operating agreements, budgets, reporting packages, covenant documents, etc. in `input/input/`). These define the actual mechanics, thresholds, formulas, and assumptions. The reference model shows layout and structure; source documents define the math. When they conflict, source documents win.
 4. For each sheet (in build order):
    a. If `build_type` is `copy`, copy the sheet from `source_sheet` and preserve its existing formatting unless the spec says otherwise
    b. If `structure_reference` or `style_reference` is present, read the corresponding formula/style dumps from `evals/` to understand structure and formatting
    c. Read the reference style dump carefully — match borders, fills, and alignment exactly
    d. Use the reference screenshot only if the dumps leave layout or visual intent ambiguous
-   e. Read any input data you need from `input/` and the sheet's `data_sources`
+   e. Read any input data you need from `input/input/` and the sheet's `data_sources`
    f. Use `implementation_notes` for high-level guidance only. They are intentionally short and non-exhaustive. Derive the actual sheet detail from the source docs, source inputs, and scoped references. If the spec lists `ambiguities`, avoid papering over them with invented mechanics.
    g. Write a Python script that builds the sheet
    h. Run the script
@@ -39,7 +39,8 @@ You build complete Excel financial models using openpyxl, working through all sh
 
 - `evals/` — formula dumps, style dumps, screenshots from reference models and your own prior output
 - Treat screenshots as fallback reference material, not the primary source of truth
-- `input/` — user-provided files (text, CSVs, Excel dumps)
+- `input/input/` — source-of-truth user-provided files (text, CSVs, Excel dumps)
+- `input/reference/` — example/reference workbooks or files for structure/style only
 - `models/model.xlsx` — the workbook you're building
 - `scripts/` — your saved build scripts
 - `conventions.md` — formatting rules
@@ -48,7 +49,7 @@ You build complete Excel financial models using openpyxl, working through all sh
 
 ## Legal and financial documents
 
-If legal or financial documents are provided in `input/` (term sheets, loan docs, partnership agreements, budgets, covenant packages, reporting memos, etc.), **read them before building**. These documents define the actual mechanics — pricing, fee structures, thresholds, allocations, payment rules, covenant tests, roll-forwards, and reporting logic. The reference model shows layout and formatting; source documents define the math. When they conflict, the source document is correct.
+If legal or financial documents are provided in `input/input/` (term sheets, loan docs, partnership agreements, budgets, covenant packages, reporting memos, etc.), **read them before building**. These documents define the actual mechanics — pricing, fee structures, thresholds, allocations, payment rules, covenant tests, roll-forwards, and reporting logic. The reference model shows layout and formatting; source documents define the math. When they conflict, the source document is correct.
 
 ## Self-evaluation checklist
 

@@ -90,6 +90,8 @@ class Run:
         self.models_dir = self.run_dir / "models"
         self.evals_dir = self.run_dir / "evals"
         self.input_dir = self.run_dir / "input"
+        self.source_input_dir = self.input_dir / "input"
+        self.reference_input_dir = self.input_dir / "reference"
         self.status_path = self.run_dir / "status.json"
         self.progress_path = self.run_dir / "progress.txt"
 
@@ -97,7 +99,7 @@ class Run:
         for d in [self.models_dir,
                   self.evals_dir / "formulas", self.evals_dir / "styles",
                   self.evals_dir / "screenshots",
-                  self.input_dir]:
+                  self.input_dir, self.source_input_dir, self.reference_input_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
         # Copy shared config into run dir (only if not already there)
@@ -164,39 +166,52 @@ class Run:
 
 
 def ingest_inputs(run: Run, input_paths: list[str]) -> dict:
-    """Copy provided files into the run's input/ dir and pre-process Excel files.
+    """Copy provided files into the run's staged input tree and pre-process Excel files.
     Returns a manifest — Planner browses the files itself."""
     manifest = {"files": [], "has_excel": False}
 
-    # Copy any explicitly provided files into the run's input/
+    def classify_dest(src: Path) -> Path:
+        parts = {p.lower() for p in src.parts}
+        name = src.name.lower()
+        if "reference" in parts or "reference" in name or "template" in name:
+            return run.reference_input_dir / src.name
+        return run.source_input_dir / src.name
+
+    # Copy any explicitly provided files into the run's staged input tree
     for p in input_paths:
         src = Path(p).resolve()
         if not src.exists():
             print(f"Warning: input file not found: {src}", file=sys.stderr)
             continue
         if src.is_dir():
-            for f in sorted(src.iterdir()):
-                if not f.name.startswith("."):
-                    shutil.copy2(f, run.input_dir / f.name)
+            for f in sorted(src.rglob("*")):
+                if f.is_file() and not f.name.startswith("."):
+                    dst = classify_dest(f)
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, dst)
         else:
-            shutil.copy2(src, run.input_dir / src.name)
+            dst = classify_dest(src)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
 
-    # Now scan run's input/ for everything that landed there
-    for f in sorted(run.input_dir.iterdir()):
-        if f.name.startswith(".") or f.name.startswith("~$"):
+    # Now scan the staged input tree for everything that landed there
+    first_reference_xlsx = True
+    for f in sorted(run.input_dir.rglob("*")):
+        if not f.is_file() or f.name.startswith(".") or f.name.startswith("~$"):
             continue
         suffix = f.suffix.lower()
-        manifest["files"].append(f.name)
+        rel = f.relative_to(run.run_dir).as_posix()
+        manifest["files"].append(rel)
 
         if suffix in INGESTABLE_EXCEL:
             manifest["has_excel"] = True
-            is_first_xlsx = not any((run.evals_dir / "formulas").iterdir())
             subprocess.run(
                 [sys.executable, str(run.run_dir / "dump.py"), str(f)],
                 check=True, cwd=str(run.run_dir),
             )
-            if is_first_xlsx:
-                # Preserve first xlsx's dumps as reference for side-by-side comparison
+            if "reference" in f.relative_to(run.input_dir).parts and first_reference_xlsx:
+                first_reference_xlsx = False
+                # Preserve first reference xlsx's dumps as reference for side-by-side comparison
                 ref_dir = run.evals_dir / "reference"
                 ref_dir.mkdir(exist_ok=True)
                 for subdir in ["screenshots", "styles", "formulas"]:
@@ -204,7 +219,7 @@ def ingest_inputs(run: Run, input_paths: list[str]) -> dict:
                     dst = ref_dir / subdir
                     if src.exists() and not dst.exists():
                         shutil.copytree(src, dst)
-            if not (run.models_dir / "model.xlsx").exists():
+            if "input" in f.relative_to(run.input_dir).parts and "reference" not in f.relative_to(run.input_dir).parts and not (run.models_dir / "model.xlsx").exists():
                 shutil.copy2(f, run.models_dir / "model.xlsx")
         elif suffix in INGESTABLE_PDF:
             # Convert PDF to text so agents can read it
@@ -214,7 +229,7 @@ def ingest_inputs(run: Run, input_paths: list[str]) -> dict:
                 with pdfplumber.open(f) as pdf:
                     text = "\n\n".join(page.extract_text() or "" for page in pdf.pages)
                 txt_path.write_text(text)
-                manifest["files"].append(txt_path.name)
+                manifest["files"].append(txt_path.relative_to(run.run_dir).as_posix())
                 print(f"  PDF → {txt_path.name} ({len(pdf.pages)} pages)")
             except ImportError:
                 print(f"  Warning: pdfplumber not installed, skipping {f.name}", file=sys.stderr)
@@ -387,9 +402,13 @@ def _parse_eval(result: str) -> dict:
     visual = payload.get("visual") or {}
     logic_issues = logic.get("issues") if isinstance(logic.get("issues"), list) else []
     visual_issues = visual.get("issues") if isinstance(visual.get("issues"), list) else []
+    has_critical_logic_issue = any(
+        str(issue.get("severity") or "").strip().lower() == "critical"
+        for issue in logic_issues
+    )
 
     return {
-        "logic_passed": bool(logic.get("passed")),
+        "logic_passed": bool(logic.get("passed")) and not has_critical_logic_issue,
         "visual_grade": str(visual.get("grade") or "?")[:1].upper(),
         "logic_feedback": _issues_to_feedback(logic_issues),
         "visual_feedback": _issues_to_feedback(visual_issues),
@@ -429,7 +448,10 @@ async def scope_inputs(run: Run, manifest: dict) -> dict:
     """Scoper: triages input/reference files into a structural scope map."""
     system_prompt = load_prompt("scoper")
     editing = manifest["has_excel"]
-    files_list = "\n".join(f"- {f}" for f in manifest["files"])
+    source_files = [f for f in manifest["files"] if f.startswith("input/input/")]
+    reference_files = [f for f in manifest["files"] if f.startswith("input/reference/")]
+    source_list = "\n".join(f"- {f}" for f in source_files) or "- (none)"
+    reference_list = "\n".join(f"- {f}" for f in reference_files) or "- (none)"
 
     prompt = f"""## User Brief
 {run.brief}
@@ -437,8 +459,12 @@ async def scope_inputs(run: Run, manifest: dict) -> dict:
 ## Mode: {"EDIT EXISTING MODEL" if editing else "NEW MODEL"}
 {"An existing .xlsx was provided and reference data has been extracted to evals/." if editing else "Build from scratch."}
 
-## Input Files (in input/)
-{files_list}
+## Source Input Files (in input/input/)
+{source_list}
+
+## Reference Files (in input/reference/)
+Use these as reference material only, not as source-of-truth mechanics.
+{reference_list}
 
 ## Reference Data (in evals/)
 {"Formula dumps: evals/formulas/" if editing else "No reference model provided."}
@@ -454,7 +480,7 @@ Keep it structural and concise. Do not write the build spec.
     await _cooldown(run, "scoper")
     await run_agent(prompt, system_prompt, SCOPER_ALLOWED,
                     cwd=str(run.run_dir), run=run, agent_name="scoper",
-                    model="claude-haiku-3-5")
+                    model="claude-haiku-4-5")
 
     scope_path = run.run_dir / "scope.json"
     if not scope_path.exists():
@@ -472,7 +498,10 @@ async def plan(run: Run, manifest: dict, scope: dict | None = None) -> dict:
     conventions = read_file(run.run_dir / "conventions.md")
     system_prompt = load_prompt("planner_v2")
 
-    files_list = "\n".join(f"- {f}" for f in manifest["files"])
+    source_files = [f for f in manifest["files"] if f.startswith("input/input/")]
+    reference_files = [f for f in manifest["files"] if f.startswith("input/reference/")]
+    source_list = "\n".join(f"- {f}" for f in source_files) or "- (none)"
+    reference_list = "\n".join(f"- {f}" for f in reference_files) or "- (none)"
     editing = manifest["has_excel"]
     scope_section = ""
     if scope:
@@ -493,8 +522,12 @@ Read `scope.json` first and use it to guide which files to inspect. Still verify
 ## Mode: {"EDIT EXISTING MODEL" if editing else "NEW MODEL"}
 {"An existing .xlsx was provided and is at models/model.xlsx. Reference data has been extracted to evals/." if editing else "Build from scratch."}
 
-## Input Files (in input/)
-{files_list}
+## Source Input Files (in input/input/)
+{source_list}
+
+## Reference Files (in input/reference/)
+These are example/reference artifacts. Use them for structure and style, not as source-of-truth mechanics.
+{reference_list}
 
 ## Reference Data (in evals/)
 {"Formula dumps: evals/formulas/" if editing else "No reference model provided."}
@@ -560,7 +593,8 @@ Previous build scripts are in scripts/. Read them to understand what was built, 
 You are in: {run.run_dir}
 - Model file: models/model.xlsx
 - Reference data: evals/ (formulas, styles, screenshots from input xlsx files)
-- Input data: input/ (text files, CSVs, Excel dumps)
+- Source input data: input/input/ (text files, CSVs, Excel dumps)
+- Reference/example files: input/reference/
 - Save scripts to: scripts/ (e.g., scripts/01_SheetName.py)
 - Dump tool: `python3 dump.py models/model.xlsx` (extracts formulas/styles/screenshots to evals/)
 
@@ -603,8 +637,9 @@ You are in: {run.run_dir}
 - Formula dumps: evals/formulas/ (one .txt per sheet — the builder's output)
 - Style dumps: evals/styles/
 - Screenshots: evals/screenshots/
-- Reference data: evals/reference/ (original input model dumps, if applicable)
-- Input data: input/
+- Reference data: evals/reference/ (original reference model dumps, if applicable)
+- Source input data: input/input/
+- Reference/example files: input/reference/
 
 Review the model thoroughly. Check formulas, formatting, cross-sheet references, and completeness against the spec. Use formula/style dumps as the primary evidence. Use screenshots only when layout or visual intent is ambiguous or when you need to confirm a visual concern that the dumps do not settle.
 """
@@ -654,8 +689,13 @@ async def main():
         manifest = ingest_inputs(run, args.inputs)
         run.append_progress(f"Ingested {len(manifest['files'])} files")
     else:
-        manifest = {"files": [f.name for f in run.input_dir.iterdir() if not f.name.startswith(".")],
-                     "has_excel": any(f.suffix.lower() in INGESTABLE_EXCEL for f in run.input_dir.iterdir())}
+        files = [f.relative_to(run.run_dir).as_posix()
+                 for f in run.input_dir.rglob("*")
+                 if f.is_file() and not f.name.startswith(".")]
+        manifest = {
+            "files": sorted(files),
+            "has_excel": any(Path(f).suffix.lower() in INGESTABLE_EXCEL for f in files),
+        }
 
     # --- Phase 1: Plan ---
     if start in ("plan",):
@@ -722,6 +762,11 @@ Save the script to scripts/fix_visual_{v_round}.py and run it."""
 
             # Re-evaluate visuals only
             verdict = await evaluate(run, spec)
+            if not verdict["logic_passed"]:
+                run.append_progress(f"Visual fix round {v_round}: logic regression detected")
+                run.update_status("failed", f"Logic regression after visual fix round {v_round}")
+                print(f"\nFailed. Output: {run.run_dir}")
+                sys.exit(1)
             grade = verdict["visual_grade"]
             visual_feedback = verdict["visual_feedback"]
             run.append_progress(f"Visual fix round {v_round}: grade={grade}")
