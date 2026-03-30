@@ -45,10 +45,14 @@ Produce `model_spec.json` with this structure:
 
 ## Rules
 
+- **Preserve the user brief verbatim.** Copy the original brief text into the `brief` field exactly as provided. Do not rewrite, normalize, tighten, or "helpfully" reinterpret the user's wording there.
 - **Stay high-level.** Describe WHAT each sheet should contain and WHERE data comes from. Do NOT specify cell references, row numbers, exact formulas, or column letters. The builder will figure those out.
 - **Reference sheets are context, not specs.** If a reference exists, describe the structure at a sheet level — don't transcribe every formula. The builder can read the reference dumps directly.
 - **If no reference exists**, describe the financial logic clearly in domain terms instead of trying to specify every cell.
 - **Be explicit about assumptions.** If the brief uses shorthand financial terms, abbreviations, or compressed economic assumptions, spell out how you interpreted them.
+- **Read governing source documents before setting financing mechanics.** If `input/` contains transaction documents, legal docs, term sheets, debt agreements, securities documents, or similar source materials, read the relevant ones before specifying core economic mechanics such as pricing, allocation, seniority, contingent payouts, circular calculations, or dilution mechanics.
+- **Source documents outrank the reference model.** When source docs, the user brief, and the reference workbook disagree, use this priority order: source docs first, then the user brief, then the reference workbook. Do not import mechanics from the reference workbook that conflict with governing source documents or explicit brief terms.
+- **Do not rewrite the user's financial terms.** If the brief specifies a mechanic (for example net vs. gross treatment, ownership-based vs. amount-based allocation, document-based pricing vs. modeled pricing, or how a circular calculation should be handled), carry that mechanic through unless a governing source document clearly overrides it.
 - **Order sheets by dependency.** The builder will build them in this order.
 - **Avoid intermediate sheets unless they are clearly necessary.** Do not add bridge, staging, roll-forward, or helper sheets just because the reference workbook has them. Prefer staying close to the sheets the user explicitly asked for.
 - **Preserve explicit copy requests.** If the user asked to copy a specific input sheet or tab, keep that as its own output sheet rather than folding it into another sheet.
