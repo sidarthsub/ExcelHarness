@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Deterministic machine evaluator for workbook logic and completeness.
+"""Deterministic formulas-to-values evaluator for workbook dumps.
 
 Runs from dump artifacts produced by dump.py. Covers whole sheets and whole
-workbooks. Primary source of truth for logic/completeness; the prompt evaluator
-remains responsible for visual review and unsupported-logic fallback.
+workbooks. Produces a structured execution/convergence artifact that can be
+used as an input to higher-level evaluation; it does not replace the prompt
+evaluator's final logic or visual judgment.
 
 See docs/evaluator_spec.md for the full specification.
 """

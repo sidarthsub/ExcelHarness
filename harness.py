@@ -103,7 +103,7 @@ class Run:
             d.mkdir(parents=True, exist_ok=True)
 
         # Copy shared config into run dir (only if not already there)
-        for fname in ["conventions.md", "dump.py"]:
+        for fname in ["conventions.md", "dump.py", "deterministic_evaluator.py"]:
             dst = self.run_dir / fname
             if not dst.exists():
                 shutil.copy2(HARNESS_ROOT / fname, dst)
@@ -593,6 +593,8 @@ Previous build scripts are in scripts/. Read them to understand what was built, 
 You are in: {run.run_dir}
 - Model file: models/model.xlsx
 - Reference data: evals/ (formulas, styles, screenshots from input xlsx files)
+- Structured formula data: evals/formulas_json/
+- Deterministic logic verdict: evals/deterministic_eval.json (if a prior evaluation has run)
 - Source input data: input/input/ (text files, CSVs, Excel dumps)
 - Reference/example files: input/reference/
 - Save scripts to: scripts/ (e.g., scripts/01_SheetName.py)
@@ -619,14 +621,120 @@ After all sheets are built, run dump.py one final time and do a quick self-check
 
 
 async def evaluate(run: Run, spec: dict) -> dict:
-    """Evaluator: checks completed model against spec and returns a parsed verdict."""
+    """Generate deterministic evaluation artifacts, then run the prompt evaluator."""
+    run.update_status("evaluating", "Preparing deterministic evaluation artifacts")
+    machine_verdict = run_deterministic_eval(run, spec)
+
+    prompt_verdict = await evaluate_with_prompt(run, spec, machine_verdict)
+
+    combined = {
+        "logic_passed": prompt_verdict["logic_passed"],
+        "visual_grade": prompt_verdict["visual_grade"],
+        "logic_feedback": prompt_verdict["logic_feedback"],
+        "visual_feedback": prompt_verdict["visual_feedback"],
+        "logic_issues": prompt_verdict["logic_issues"],
+        "visual_issues": prompt_verdict["visual_issues"],
+        "raw": {
+            "deterministic": machine_verdict,
+            "prompt": prompt_verdict["raw"],
+        },
+        "parsed": {
+            "deterministic": machine_verdict,
+            "prompt": prompt_verdict["parsed"],
+        },
+    }
+    (run.evals_dir / "combined_eval.json").write_text(json.dumps(combined["parsed"], indent=2))
+    return combined
+
+
+def run_deterministic_eval(run: Run, spec: dict) -> dict:
+    """Run the deterministic evaluator and persist its verdict."""
+    formulas_json_dir = run.evals_dir / "formulas_json"
+    output_path = run.evals_dir / "deterministic_eval.json"
+
+    if not formulas_json_dir.exists():
+        verdict = {
+            "logic": {"passed": True, "issues": []},
+            "visual": {"grade": "?", "issues": []},
+            "summary": {
+                "artifact_status": "error",
+                "artifact_error": f"Structured formula dump is missing: expected {formulas_json_dir}",
+            },
+        }
+        output_path.write_text(json.dumps(verdict, indent=2))
+        return verdict
+
+    cmd = [
+        sys.executable,
+        str(run.run_dir / "deterministic_evaluator.py"),
+        str(formulas_json_dir),
+        "--spec",
+        str(run.run_dir / "model_spec.json"),
+        "--output",
+        str(output_path),
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(run.run_dir),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except Exception as e:
+        verdict = {
+            "logic": {"passed": True, "issues": []},
+            "visual": {"grade": "?", "issues": []},
+            "summary": {
+                "artifact_status": "error",
+                "artifact_error": f"Deterministic evaluator failed to run: {e}",
+            },
+        }
+        output_path.write_text(json.dumps(verdict, indent=2))
+        return verdict
+
+    if output_path.exists():
+        verdict = json.loads(output_path.read_text())
+    else:
+        stderr = (proc.stderr or "").strip()
+        stdout = (proc.stdout or "").strip()
+        verdict = {
+            "logic": {"passed": True, "issues": []},
+            "visual": {"grade": "?", "issues": []},
+            "summary": {
+                "artifact_status": "error",
+                "artifact_error": stderr or stdout or "Deterministic evaluator produced no output file",
+            },
+        }
+        output_path.write_text(json.dumps(verdict, indent=2))
+
+    if proc.returncode not in (0, 1):
+        summary = verdict.setdefault("summary", {})
+        summary["artifact_status"] = "error"
+        summary["artifact_error"] = (proc.stderr or proc.stdout or "").strip() or "Deterministic evaluator exited unexpectedly"
+        output_path.write_text(json.dumps(verdict, indent=2))
+
+    return verdict
+
+
+async def evaluate_with_prompt(run: Run, spec: dict, machine_verdict: dict) -> dict:
+    """Prompt evaluator: final logic and visual QA, using deterministic output as input."""
     system_prompt = load_prompt("evaluator_v2")
     conventions = read_file(run.run_dir / "conventions.md")
     spec_json = json.dumps(spec, indent=2)
+    machine_json = json.dumps(machine_verdict, indent=2)
 
     prompt = f"""## Build Spec
 ```json
 {spec_json}
+```
+
+## Deterministic Logic Verdict
+This is an additional formulas-to-values artifact generated from `evals/formulas_json/`.
+Use it as supporting evidence when it is helpful, but it does not replace your evaluation.
+```json
+{machine_json}
 ```
 
 ## Conventions
@@ -634,6 +742,8 @@ async def evaluate(run: Run, spec: dict) -> dict:
 
 ## Working Directory
 You are in: {run.run_dir}
+- Structured formula data: evals/formulas_json/
+- Deterministic verdict: evals/deterministic_eval.json
 - Formula dumps: evals/formulas/ (one .txt per sheet — the builder's output)
 - Style dumps: evals/styles/
 - Screenshots: evals/screenshots/
@@ -641,17 +751,21 @@ You are in: {run.run_dir}
 - Source input data: input/input/
 - Reference/example files: input/reference/
 
-Review the model thoroughly. Check formulas, formatting, cross-sheet references, and completeness against the spec. Use formula/style dumps as the primary evidence. Use screenshots only when layout or visual intent is ambiguous or when you need to confirm a visual concern that the dumps do not settle.
+Review the model thoroughly. Use the deterministic verdict as one more artifact alongside the formula dumps, style dumps, screenshots, spec, and source docs.
+If the deterministic verdict appears incomplete or reflects a tooling/runtime problem, treat that as a limitation of the artifact rather than an automatic model failure.
+
+Use formula/style dumps as the primary evidence. Use screenshots only when layout or visual intent is ambiguous or when you need to confirm a visual concern that the dumps do not settle.
 """
 
-    run.update_status("evaluating", "Final QA review")
+    run.update_status("evaluating", "Prompt QA review")
     await _cooldown(run, "evaluator")
     result = await run_agent(prompt, system_prompt, EVALUATOR_ALLOWED,
                              cwd=str(run.run_dir), run=run, agent_name="evaluator",
                              disallowed_tools=EVALUATOR_DISALLOWED,
                              model="claude-sonnet-4-6")
-
-    return _parse_eval(result)
+    parsed = _parse_eval(result)
+    (run.evals_dir / "prompt_eval.json").write_text(json.dumps(parsed["parsed"], indent=2))
+    return parsed
 
 
 async def main():

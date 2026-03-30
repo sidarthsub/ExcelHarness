@@ -2,7 +2,7 @@
 
 ## Summary
 
-This document specifies a deterministic machine evaluator for workbook logic and completeness. The evaluator runs from dump artifacts produced by `dump.py`, covers whole sheets and whole workbooks, and serves as the primary logic/completeness reviewer. The existing prompt evaluator remains in place for visual review and as a fallback for unsupported logic/features.
+This document specifies a deterministic formulas-to-values evaluator for workbook dumps. The evaluator runs from dump artifacts produced by `dump.py`, covers whole sheets and whole workbooks, and produces a structured execution/convergence artifact that feeds the higher-level prompt evaluator. The prompt evaluator remains responsible for final logic judgment, semantic review, and visual review.
 
 This is a v1 implementation spec. It is intended for an engineer or agent building the evaluator, not for end users.
 
@@ -64,19 +64,20 @@ It must not treat cached values as authoritative computed truth for supported lo
 
 ### Machine evaluator responsibilities
 
-The deterministic evaluator is the primary source of truth for:
-- sheet presence and required output set
+The deterministic evaluator is responsible for:
 - dependency graph integrity
 - formula parsing and function support classification
 - deterministic value computation for supported formulas
 - convergence status for iterative components
-- hardcoded-vs-linked source checks where the spec requires live linkage
-- placeholder/zero-row hygiene checks
-- totals, percentages, and consistency checks across full modeled sheets
+- producing a structured artifact the prompt evaluator can use as additional evidence
 
 ### Prompt evaluator responsibilities
 
 The prompt evaluator remains responsible for:
+- final logic judgment
+- sheet presence and completeness
+- hardcoded-vs-linked source checks where the spec requires live linkage
+- totals, percentages, and higher-level consistency checks
 - visual fidelity
 - unsupported formulas or unsupported workbook features
 - semantic finance/accounting/legal judgment that cannot be derived from artifacts
@@ -379,14 +380,10 @@ The harness may translate unsupported findings into:
 The spec should define the combination policy clearly:
 
 1. Run deterministic evaluator first
-2. If logic is fully supported and passes, proceed
-3. If unsupported logic is present:
-   - route to prompt fallback
-   - include unsupported inventory in fallback context
+2. Persist its output as an evaluation artifact
+3. Pass that artifact to the prompt evaluator together with the spec, dumps, source docs, and visual references
 4. Visual evaluation remains prompt-based in v1
-5. Final logic pass must not ignore deterministic criticals or non-convergence
-
-The machine evaluator must be treated as primary for supported logic. The prompt evaluator must not silently override deterministic critical findings.
+5. The deterministic artifact should inform the prompt evaluator, but does not replace its final judgment
 
 ## Performance Targets
 
