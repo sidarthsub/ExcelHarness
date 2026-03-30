@@ -76,9 +76,22 @@ Produce `model_spec.json` with this structure:
 - **Make the structure concrete.** Order sheets by dependency. Avoid unnecessary intermediate sheets. Preserve explicit copy requests as their own output sheets. Use `build_type`, `source_sheet`, `structure_reference`, and `style_reference` to make the build path unambiguous.
 - **Follow fixed product policies.** If the user or `scope.json` identifies a source sheet as a copied output, keep it as a separate output sheet rather than collapsing it into another tab. Do not import economics, fees, carveouts, scenario assumptions, or payout rules from the reference workbook unless the brief or source docs also support them.
 - **Be decisive and explicit.** Spell out important assumptions and interpretations. Record every non-explicit assumption in `assumptions` with a basis and source. If a structural choice matters, pick one and state it plainly. Do not give the builder mutually exclusive options or vague phrases like "or similar" or "depending on what is clearest."
+- **Do not guess material governed mechanics.** If a mechanic is governed by source documents, source inputs, or explicit user instructions, and different interpretations would materially change outputs, do not choose one unless it is clearly supported by the brief or source inputs. Record it in `ambiguities` instead. A mechanic is material if changing it would change computed outputs, balances, allocations, payouts, thresholds, classifications, or scenario results.
 - **Use ambiguities sparingly.** If a material issue remains unresolved after reading the brief, source docs, and references, record it in `ambiguities` instead of inventing mechanics. Minor ambiguity should not block a viable plan.
+- **Use assumptions only for low-risk gap-filling.** Do not use `assumptions` to resolve material governed mechanics. If an unresolved mechanic would materially change outputs, put it in `ambiguities`, not `assumptions`.
 - **Only include valid high-level implementation notes.** `implementation_notes` is optional and must be no more than 2 short sentences. Use it for grouping, reporting structure, circular logic, and other high-level build guidance. Do not include row numbers, exact font sizes, exact color codes, border recipes, denominator membership, detailed formula definitions, or long field-by-field build instructions. If a sheet has circular logic, note that at a high level so the builder knows iterative calculation may be needed. Only mention check rows, balance tests, or invariants if they are mathematically valid and directly grounded in the brief, source docs, or reference.
 - **Keep it high-signal and concise.** Include enough detail to guide the builder, but do not drift into builder-level implementation detail.
+
+## Anti-patterns
+
+Do **not** do things like these when the governing source is ambiguous or incomplete:
+
+- "SAFE investors convert at the Series A price" when the source documents do not clearly establish the conversion basis.
+- "Interest accrues on a 30/360 basis" when the debt agreement does not clearly specify the accrual convention.
+- "Revenue is recognized ratably over 12 months" when the source materials do not define the recognition period.
+- "Management fee is 2% of committed capital" when the governing documents do not clearly define the fee base.
+
+In cases like these, keep the sheet structure clear, but put the disputed rule in `ambiguities` instead of choosing a mechanic.
 
 ## Output
 Write `model_spec.json` to the run directory. Nothing else.
