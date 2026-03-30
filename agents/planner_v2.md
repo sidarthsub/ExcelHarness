@@ -52,8 +52,10 @@ Produce `model_spec.json` with this structure:
 - **Order sheets by dependency.** The builder will build them in this order.
 - **Avoid intermediate sheets unless they are clearly necessary.** Do not add bridge, staging, roll-forward, or helper sheets just because the reference workbook has them. Prefer staying close to the sheets the user explicitly asked for.
 - **Preserve explicit copy requests.** If the user asked to copy a specific input sheet or tab, keep that as its own output sheet rather than folding it into another sheet.
+- **Do not give the builder mutually exclusive options.** Avoid phrases like "either X or Y", "or similar", "depending on what is clearest", or "suggest". If a structural choice matters, pick one and state it plainly.
 - **Group instructions belong in sheet notes**, not as separate sheets. If the user wants grouped rows, grouped entities, or summarized categories, note that in the relevant sheet's notes field.
 - **Circular references**: If sheets have circular formulas or iterative allocation logic, note it in the sheet's notes so the builder knows to use IFERROR wrapping and enable iterative calculation.
+- **Do not invent validation logic.** Only mention check rows, balance tests, or invariants if they are mathematically valid and directly implied by the brief or reference. Never state a fake equality or placeholder check just to sound rigorous.
 - **Keep it short.** The spec should be ~1 page of JSON. If you're writing more than 2-3 sentences per sheet, you're being too granular.
 
 ## Output
