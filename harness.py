@@ -422,7 +422,7 @@ def _issues_to_feedback(issues: list[dict]) -> str:
     return "\n".join(lines)
 
 
-MAX_VISUAL_FIX_ROUNDS = 2
+MAX_VISUAL_FIX_ROUNDS = 4
 
 
 async def scope_inputs(run: Run, manifest: dict) -> dict:
@@ -454,7 +454,7 @@ Keep it structural and concise. Do not write the build spec.
     await _cooldown(run, "scoper")
     await run_agent(prompt, system_prompt, SCOPER_ALLOWED,
                     cwd=str(run.run_dir), run=run, agent_name="scoper",
-                    model="claude-sonnet-4-6")
+                    model="claude-haiku-3-5")
 
     scope_path = run.run_dir / "scope.json"
     if not scope_path.exists():
@@ -529,7 +529,7 @@ Keep it high-level — describe what each sheet should contain, not cell-by-cell
     return spec
 
 
-async def build(run: Run, spec: dict, feedback: str | None = None) -> None:
+async def build(run: Run, spec: dict, feedback: str | None = None, model: str | None = None) -> None:
     """Builder: reads spec + reference data, builds all sheets in one session."""
     conventions = read_file(run.run_dir / "conventions.md")
     system_prompt = load_prompt("builder")
@@ -580,7 +580,7 @@ After all sheets are built, run dump.py one final time and do a quick self-check
     await _cooldown(run, "builder")
     result = await run_agent(prompt, system_prompt, BUILDER_ALLOWED,
                              cwd=str(run.run_dir), run=run, agent_name="builder",
-                             disallowed_tools=BUILDER_DISALLOWED)
+                             disallowed_tools=BUILDER_DISALLOWED, model=model)
     run.append_progress(f"Builder done{' (fix pass)' if feedback else ''}")
 
 
@@ -622,16 +622,25 @@ Review the model thoroughly. Check formulas, formatting, cross-sheet references,
 async def main():
     import argparse
     parser = argparse.ArgumentParser(description="Spreadsheet Harness v2")
-    parser.add_argument("brief", help="User brief describing what to build")
+    parser.add_argument("brief", nargs="?", help="User brief describing what to build")
     parser.add_argument("inputs", nargs="*", help="Input file/directory paths")
     parser.add_argument("--run", help="Resume an existing run directory (skip ingest)")
     parser.add_argument("--start-from", choices=["plan", "build", "eval"],
                         default="plan", help="Skip earlier phases (requires --run)")
     args = parser.parse_args()
 
+    if not args.brief and not args.run:
+        parser.error("brief is required unless resuming with --run")
+
     # --- Initialize or resume run ---
     if args.run:
-        run = Run(args.brief, run_dir=args.run)
+        # Load brief from existing run's status.json if not provided
+        brief = args.brief
+        if not brief:
+            status_path = Path(args.run) / "status.json"
+            if status_path.exists():
+                brief = json.loads(status_path.read_text()).get("brief", "")
+        run = Run(brief, run_dir=args.run)
         print(f"Resuming: {run.run_dir}")
     else:
         run = Run(args.brief)
@@ -693,7 +702,7 @@ async def main():
         sys.exit(1)
 
     # --- Phase 4: Visual fix loop (logic already passed) ---
-    if visual_feedback and grade not in ("A", "B"):
+    if visual_feedback and grade not in ("A",):
         for v_round in range(1, MAX_VISUAL_FIX_ROUNDS + 1):
             run.update_status("generating", f"Visual fix (round {v_round})")
             visual_prompt = f"""## Visual Issues Only — DO NOT change any formulas or data
@@ -704,7 +713,7 @@ Read the reference style dumps and screenshots, then write a fix script that ONL
 borders, fills, fonts, column widths, alignment, number formats. Do NOT touch cell values or formulas.
 Save the script to scripts/fix_visual_{v_round}.py and run it."""
 
-            await build(run, spec, feedback=visual_prompt)
+            await build(run, spec, feedback=visual_prompt, model="claude-sonnet-4-6")
             run.update_status("dumping", f"Re-extracting after visual fix (round {v_round})")
             try:
                 run.run_dump()
