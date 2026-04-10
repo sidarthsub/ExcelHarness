@@ -1,4 +1,15 @@
+# v3 per-session artifacts
 runs/
+models/*.xlsx
+!models/.gitkeep
+
+# Python
 __pycache__/
 *.pyc
+.venv/
+
+# macOS
 .DS_Store
+
+# Office sideload temp files
+/tmp/Excel add-in *.xlsx
