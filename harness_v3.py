@@ -194,6 +194,92 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
     return spec
 
 
+async def prepare_eval_input(
+    session: Session,
+    server: BridgeServer,
+    checkpoint_description: str,
+    spec: dict,
+    turn: int,
+) -> tuple[Path, bytes]:
+    """Snapshot the workbook, dump each sheet, render screenshots, and write them into an eval_input dir.
+
+    Returns a tuple of (eval_dir, xlsx_bytes). The bytes are returned so the
+    caller can also use them for git commits without re-reading the file.
+    """
+    import base64
+    import shutil
+    from snapshot_renderer import render_xlsx_to_pngs
+
+    eval_dir = session.run_dir / "eval_input"
+    # Clean and recreate each checkpoint so the evaluator sees only current state.
+    if eval_dir.exists():
+        shutil.rmtree(eval_dir)
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "dumps").mkdir()
+    (eval_dir / "screenshots").mkdir()
+
+    # Checkpoint description + spec
+    (eval_dir / "checkpoint.md").write_text(checkpoint_description)
+    (eval_dir / "spec.json").write_text(json.dumps(spec, indent=2))
+
+    # Snapshot the workbook
+    snap_result = await server.send_command("saveSnapshot", {})
+    xlsx_bytes = b""
+    if snap_result.get("ok"):
+        xlsx_bytes = base64.b64decode(snap_result["base64"])
+        snap_path = session.snapshots_dir / f"turn_{turn}.xlsx"
+        snap_path.write_bytes(xlsx_bytes)
+
+        # Render PNGs
+        try:
+            render_xlsx_to_pngs(snap_path, eval_dir / "screenshots")
+        except Exception as e:
+            # Rendering failure is not fatal — evaluator still has dumps + spec.
+            print(f"[harness] Snapshot render failed: {e}")
+
+    # Dump each sheet
+    sheets_result = await server.send_command("getSheetNames", {})
+    for sheet_name in sheets_result.get("sheets", []):
+        dump = await server.send_command("dumpSheet", {"sheet": sheet_name})
+        safe_name = sheet_name.replace("/", "_").replace(" ", "_")
+        (eval_dir / "dumps" / f"{safe_name}.json").write_text(json.dumps(dump, indent=2))
+
+    return eval_dir, xlsx_bytes
+
+
+async def run_evaluator(session: Session, eval_dir: Path) -> dict:
+    """Invoke the Evaluator agent in a fresh context and parse its JSON verdict."""
+    prompt = (AGENTS_DIR / "evaluator_v3.md").read_text()
+    user_msg = (
+        f"Review the checkpoint. Input is at {eval_dir}. "
+        f"Return ONLY a JSON object per your output format spec."
+    )
+
+    result_text = await run_agent_session(
+        system_prompt=prompt,
+        user_messages=[user_msg],
+        allowed_tools=["Read", "Glob", "Grep", "Bash(cat*)", "Bash(ls*)"],
+        cwd=ROOT,
+    )
+
+    # Extract JSON from response
+    import re
+    m = re.search(r"\{.*\}", result_text, re.DOTALL)
+    if not m:
+        return {
+            "status": "fail",
+            "findings": [{"severity": "error", "issue": "Evaluator did not return JSON"}],
+        }
+    try:
+        verdict = json.loads(m.group(0))
+    except json.JSONDecodeError as e:
+        return {
+            "status": "fail",
+            "findings": [{"severity": "error", "issue": f"Evaluator JSON parse failed: {e}"}],
+        }
+    return verdict
+
+
 async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -> None:
     """Long-running Builder loop.
 
@@ -229,18 +315,16 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
             while not stop_watcher.is_set():
                 pending_cp = server.pop_pending_checkpoint()
                 if pending_cp is not None:
-                    # Snapshot the workbook
-                    snap_result = await server.send_command("saveSnapshot", {})
-                    xlsx_bytes = b""
-                    if snap_result.get("ok"):
-                        import base64
-                        xlsx_bytes = base64.b64decode(snap_result["base64"])
-                        snap_path = session.snapshots_dir / f"turn_{turn}.xlsx"
-                        snap_path.write_bytes(xlsx_bytes)
-                    # Stub: evaluator always passes in Phase 4
-                    verdict = {"status": "pass"}
-                    # Write committed model + git commit
-                    if xlsx_bytes:
+                    # Prepare eval input (snapshot + dumps + screenshots)
+                    eval_dir, xlsx_bytes = await prepare_eval_input(
+                        session, server, pending_cp.description, spec, turn
+                    )
+
+                    # Run the real Evaluator
+                    verdict = await run_evaluator(session, eval_dir)
+
+                    # Only commit on PASS
+                    if verdict.get("status") == "pass" and xlsx_bytes:
                         model_path = session.run_dir / "models"
                         model_path.mkdir(exist_ok=True)
                         committed = model_path / "model.xlsx"
@@ -252,7 +336,20 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
                             check=False,
                             cwd=ROOT,
                         )
-                    await server.send_chat(f"✓ Committed: {pending_cp.description}")
+                        await server.send_chat(f"✓ {pending_cp.description}")
+                    else:
+                        # FAIL (or snapshot failed): don't commit. Pass findings back to Builder.
+                        findings_text = "\n".join(
+                            f"  - [{f.get('severity', 'error')}] "
+                            f"{f.get('sheet', '')}"
+                            f"{(':' + f['cell']) if f.get('cell') else ''}: "
+                            f"{f.get('issue', '')}"
+                            for f in verdict.get("findings", [])
+                        )
+                        await server.send_chat(
+                            f"✗ Evaluator FAIL: {pending_cp.description}\n{findings_text}"
+                        )
+
                     pending_cp.resolve(verdict)
                     checkpoint_results.append(pending_cp.description)
                 await asyncio.sleep(0.3)
