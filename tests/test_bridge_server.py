@@ -98,3 +98,46 @@ async def test_http_api_command_endpoint(server):
             assert body["ok"] is True
 
     addin_task.cancel()
+
+
+async def test_inbound_chat_enqueues(server):
+    """A {type: 'chat', text: ...} message from the add-in ends up in the ChatQueue."""
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    import websockets
+    async def fake_addin():
+        uri = f"wss://{server.host}:{server.wss_port}"
+        async with websockets.connect(uri, ssl=ssl_ctx) as ws:
+            await ws.send(json.dumps({"type": "chat", "text": "hi from user"}))
+            await asyncio.sleep(0.3)  # let server process
+
+    await fake_addin()
+
+    # Drain the queue and confirm the message arrived.
+    assert server.chat_queue.drain_all() == ["hi from user"]
+
+
+async def test_outbound_chat_sends_to_addin(server):
+    """server.send_chat(text) pushes a {type: 'chat', ...} message to the connected add-in."""
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    received = []
+    import websockets
+    async def fake_addin():
+        uri = f"wss://{server.host}:{server.wss_port}"
+        async with websockets.connect(uri, ssl=ssl_ctx) as ws:
+            msg = await ws.recv()
+            received.append(json.loads(msg))
+
+    task = asyncio.create_task(fake_addin())
+    await asyncio.sleep(0.2)
+    await server.send_chat("hello from harness")
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert len(received) == 1
+    assert received[0]["type"] == "chat"
+    assert received[0]["text"] == "hello from harness"

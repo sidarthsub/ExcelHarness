@@ -14,6 +14,8 @@ from typing import Optional
 import websockets
 from aiohttp import web
 
+from chat_queue import ChatQueue
+
 ADDIN_DIR = Path(__file__).parent / "officejs-prototype" / "addin"
 
 
@@ -38,6 +40,7 @@ class BridgeServer:
         self._addin_ws = None
         self._pending: dict[str, asyncio.Future] = {}
         self._msg_counter = 0
+        self.chat_queue = ChatQueue()
 
     async def start(self) -> None:
         self._ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -82,6 +85,11 @@ class BridgeServer:
         finally:
             self._pending.pop(msg_id, None)
 
+    async def send_chat(self, text: str) -> None:
+        if self._addin_ws is None:
+            return
+        await self._addin_ws.send(json.dumps({"type": "chat", "text": text}))
+
     async def _handle_api_command(self, request: web.Request) -> web.Response:
         try:
             body = await request.json()
@@ -110,6 +118,11 @@ class BridgeServer:
         try:
             async for message in websocket:
                 data = json.loads(message)
+                msg_type = data.get("type")
+                if msg_type == "chat":
+                    self.chat_queue.enqueue(data.get("text", ""))
+                    continue
+                # Command response
                 msg_id = data.get("id")
                 if msg_id and msg_id in self._pending:
                     self._pending[msg_id].set_result(data)
