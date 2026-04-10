@@ -44,6 +44,7 @@ class BridgeServer:
         self._ssl_ctx.load_cert_chain(self.cert_path, self.key_path)
 
         app = web.Application()
+        app.router.add_post("/api/command", self._handle_api_command)
         app.router.add_get("/{path:.*}", self._handle_static)
 
         self._runner = web.AppRunner(app)
@@ -80,6 +81,18 @@ class BridgeServer:
             return {"error": "timeout"}
         finally:
             self._pending.pop(msg_id, None)
+
+    async def _handle_api_command(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        command = body.get("command")
+        params = body.get("params") or {}
+        if not command:
+            return web.json_response({"error": "missing command"}, status=400)
+        result = await self.send_command(command, params)
+        return web.json_response(result)
 
     async def _handle_static(self, request: web.Request) -> web.StreamResponse:
         path = request.match_info.get("path", "taskpane.html") or "taskpane.html"

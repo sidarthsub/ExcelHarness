@@ -68,3 +68,33 @@ async def test_send_command_to_addin(server):
 
     await asyncio.wait_for(fake_addin_task_done.wait(), timeout=2.0)
     addin_task.cancel()
+
+
+async def test_http_api_command_endpoint(server):
+    """POST /api/command forwards to the add-in and returns the result."""
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    async def fake_addin():
+        import websockets
+        uri = f"wss://{server.host}:{server.wss_port}"
+        async with websockets.connect(uri, ssl=ssl_ctx) as ws:
+            msg = await ws.recv()
+            data = json.loads(msg)
+            await ws.send(json.dumps({"id": data["id"], "ok": True}))
+
+    addin_task = asyncio.create_task(fake_addin())
+    await asyncio.sleep(0.2)
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"https://{server.host}:{server.http_port}/api/command",
+            json={"command": "writeValues", "params": {"sheet": "X", "address": "A1", "values": [[1]]}},
+            ssl=ssl_ctx,
+        ) as resp:
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["ok"] is True
+
+    addin_task.cancel()
