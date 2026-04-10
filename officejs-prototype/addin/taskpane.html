@@ -325,6 +325,69 @@
                     }
                 }
                 return { ok: true, results };
+            },
+
+            async dumpSheet({ sheet }) {
+                return Excel.run(async (ctx) => {
+                    const ws = ctx.workbook.worksheets.getItem(sheet);
+                    const used = ws.getUsedRange(true /* onlyValues=false, include all */);
+                    used.load(["address", "values", "formulas", "numberFormat", "rowCount", "columnCount"]);
+                    await ctx.sync();
+                    return {
+                        ok: true,
+                        sheet: sheet,
+                        address: used.address,
+                        dimensions: { rows: used.rowCount, cols: used.columnCount },
+                        values: used.values,
+                        formulas: used.formulas,
+                        numberFormat: used.numberFormat,
+                    };
+                });
+            },
+
+            async protectWorkbook({ password }) {
+                return Excel.run(async (ctx) => {
+                    // Protect every worksheet so users can't type into cells.
+                    const sheets = ctx.workbook.worksheets;
+                    sheets.load("items/name");
+                    await ctx.sync();
+                    for (const ws of sheets.items) {
+                        ws.protection.protect({}, password);
+                    }
+                    await ctx.sync();
+                    return { ok: true };
+                });
+            },
+
+            async unprotectWorkbook({ password }) {
+                return Excel.run(async (ctx) => {
+                    const sheets = ctx.workbook.worksheets;
+                    sheets.load("items/name");
+                    await ctx.sync();
+                    for (const ws of sheets.items) {
+                        ws.protection.unprotect(password);
+                    }
+                    await ctx.sync();
+                    return { ok: true };
+                });
+            },
+
+            async saveSnapshot({ path }) {
+                // Workbook.getFileInBase64() returns the workbook contents as base64 so
+                // the harness can write it wherever it wants. The `path` param is accepted
+                // but unused — the harness controls where the bytes land.
+                return Excel.run(async (ctx) => {
+                    const file = ctx.workbook.getFileInBase64();
+                    await ctx.sync();
+                    return { ok: true, base64: file.value };
+                });
+            },
+
+            async setStatus({ text }) {
+                // Updates the status line in the taskpane. No Excel API call — just DOM.
+                const el = document.getElementById("status");
+                if (el) el.textContent = text;
+                return { ok: true };
             }
         };
 

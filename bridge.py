@@ -100,3 +100,18 @@ class Bridge:
     # --- Batch ---
     def batch(self, commands: list) -> dict:
         return self._call("batch", {"commands": commands})
+
+    def dump_sheet(self, sheet: str) -> dict:
+        return self._call("dumpSheet", {"sheet": sheet})
+
+    def protect_workbook(self, password: str | None = None) -> dict:
+        return self._call("protectWorkbook", {"password": password})
+
+    def unprotect_workbook(self, password: str | None = None) -> dict:
+        return self._call("unprotectWorkbook", {"password": password})
+
+    def save_snapshot(self) -> dict:
+        return self._call("saveSnapshot", {})
+
+    def set_status(self, text: str) -> dict:
+        return self._call("setStatus", {"text": text})
