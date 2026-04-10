@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import ssl
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,16 @@ from aiohttp import web
 from chat_queue import ChatQueue
 
 ADDIN_DIR = Path(__file__).parent / "officejs-prototype" / "addin"
+
+
+@dataclass
+class PendingCheckpoint:
+    description: str
+    future: asyncio.Future
+
+    def resolve(self, result: dict) -> None:
+        if not self.future.done():
+            self.future.set_result(result)
 
 
 class BridgeServer:
@@ -41,6 +52,7 @@ class BridgeServer:
         self._pending: dict[str, asyncio.Future] = {}
         self._msg_counter = 0
         self.chat_queue = ChatQueue()
+        self._checkpoint_queue: asyncio.Queue[PendingCheckpoint] = asyncio.Queue()
 
     async def start(self) -> None:
         self._ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -48,6 +60,8 @@ class BridgeServer:
 
         app = web.Application()
         app.router.add_post("/api/command", self._handle_api_command)
+        app.router.add_post("/api/checkpoint", self._handle_checkpoint)
+        app.router.add_post("/api/emit", self._handle_emit)
         app.router.add_get("/{path:.*}", self._handle_static)
 
         self._runner = web.AppRunner(app)
@@ -101,6 +115,36 @@ class BridgeServer:
             return web.json_response({"error": "missing command"}, status=400)
         result = await self.send_command(command, params)
         return web.json_response(result)
+
+    async def _handle_checkpoint(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        description = body.get("description", "")
+        future = asyncio.get_event_loop().create_future()
+        pending = PendingCheckpoint(description=description, future=future)
+        await self._checkpoint_queue.put(pending)
+        result = await future
+        return web.json_response(result)
+
+    async def _handle_emit(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        text = body.get("text", "")
+        await self.send_chat(text)
+        return web.json_response({"ok": True})
+
+    def pop_pending_checkpoint(self) -> PendingCheckpoint | None:
+        try:
+            return self._checkpoint_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
+
+    async def wait_for_checkpoint(self) -> PendingCheckpoint:
+        return await self._checkpoint_queue.get()
 
     async def _handle_static(self, request: web.Request) -> web.StreamResponse:
         path = request.match_info.get("path", "taskpane.html") or "taskpane.html"

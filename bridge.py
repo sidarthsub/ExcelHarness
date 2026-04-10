@@ -115,3 +115,25 @@ class Bridge:
 
     def set_status(self, text: str) -> dict:
         return self._call("setStatus", {"text": text})
+
+    def checkpoint(self, description: str) -> dict:
+        """Block until the harness resolves this checkpoint (after evaluator + commit)."""
+        resp = requests.post(
+            f"{self.base_url}/api/checkpoint",
+            json={"description": description},
+            verify=self.verify,
+            timeout=600,  # long poll — checkpoint may take a while
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def emit(self, text: str) -> dict:
+        """Send an agent-initiated chat message to the taskpane."""
+        resp = requests.post(
+            f"{self.base_url}/api/emit",
+            json={"text": text},
+            verify=self.verify,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()

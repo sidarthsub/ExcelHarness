@@ -171,3 +171,35 @@ async def test_chat_roundtrip_in_process(server):
     await asyncio.wait_for(task, timeout=2.0)
     assert received_from_harness[0]["type"] == "chat"
     assert received_from_harness[0]["text"] == "pong"
+
+
+async def test_checkpoint_long_poll(server):
+    """Bridge client's POST /api/checkpoint blocks until the harness resolves it."""
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    # Kick off a checkpoint request in a background task
+    async def do_checkpoint():
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                f"https://{server.host}:{server.http_port}/api/checkpoint",
+                json={"description": "Revenue sheet complete"},
+                ssl=ssl_ctx,
+            ) as resp:
+                return await resp.json()
+
+    cp_task = asyncio.create_task(do_checkpoint())
+    await asyncio.sleep(0.2)
+
+    # Server should show a pending checkpoint
+    pending = server.pop_pending_checkpoint()
+    assert pending is not None
+    assert pending.description == "Revenue sheet complete"
+
+    # Resolve it
+    pending.resolve({"status": "pass"})
+
+    # The HTTP call should now return
+    result = await asyncio.wait_for(cp_task, timeout=2.0)
+    assert result["status"] == "pass"
