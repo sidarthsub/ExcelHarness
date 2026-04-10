@@ -14,12 +14,31 @@
         button { background: #2F5496; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; margin-bottom: 12px; }
         button:hover { background: #3a65b0; }
         button:disabled { background: #555; cursor: not-allowed; }
+        #chatLog { background: #0f0f0f; padding: 10px; border-radius: 4px; min-height: 200px; max-height: 400px; overflow-y: auto; margin: 10px 0; font-family: -apple-system, sans-serif; }
+        .chat-msg { padding: 6px 10px; margin: 4px 0; border-radius: 6px; max-width: 90%; }
+        .chat-user { background: #1f3864; color: #fff; margin-left: auto; text-align: right; }
+        .chat-agent { background: #2a2a2a; color: #ccc; }
+        .chat-system { background: #3a2a1a; color: #e0a050; font-style: italic; }
+        #chatInputRow { display: flex; gap: 8px; }
+        #chatInput { flex: 1; background: #1a1a1a; color: #ccc; border: 1px solid #333; padding: 8px; border-radius: 4px; }
+        #chatInput:disabled { opacity: 0.5; }
+        #chatSend { background: #2F5496; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
+        #chatSend:disabled { background: #555; cursor: not-allowed; }
+        details#debugLog summary { cursor: pointer; color: #888; margin-top: 12px; }
     </style>
 </head>
 <body>
     <div id="status">Initializing...</div>
     <button id="runTest" onclick="runTest()" disabled>Run Test</button>
-    <div id="log"></div>
+    <div id="chatLog"></div>
+    <div id="chatInputRow">
+        <input type="text" id="chatInput" placeholder="Type a message..." disabled />
+        <button id="chatSend" onclick="sendChat()" disabled>Send</button>
+    </div>
+    <details id="debugLog">
+        <summary>Debug log</summary>
+        <div id="log"></div>
+    </details>
 
     <script>
         const statusEl = document.getElementById("status");
@@ -38,6 +57,37 @@
             statusEl.textContent = text;
             statusEl.className = cls || "";
         }
+
+        function addChatMessage(text, role) {
+            const log = document.getElementById("chatLog");
+            const msg = document.createElement("div");
+            msg.className = `chat-msg chat-${role}`;
+            msg.textContent = text;
+            log.appendChild(msg);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function sendChat() {
+            const input = document.getElementById("chatInput");
+            const text = input.value.trim();
+            if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({ type: "chat", text: text }));
+            addChatMessage(text, "user");
+            input.value = "";
+        }
+
+        // Handle Enter key
+        document.addEventListener("DOMContentLoaded", () => {
+            const input = document.getElementById("chatInput");
+            if (input) {
+                input.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        sendChat();
+                    }
+                });
+            }
+        });
 
         // --- Command handlers ---
 
@@ -401,11 +451,20 @@
                 setStatus("Connected", "ok");
                 log("Connected to relay server", "ok");
                 document.getElementById("runTest").disabled = false;
+                document.getElementById("chatInput").disabled = false;
+                document.getElementById("chatSend").disabled = false;
                 ws.send(JSON.stringify({ type: "hello", client: "officejs-addin" }));
             };
 
             ws.onmessage = async (event) => {
                 const msg = JSON.parse(event.data);
+
+                // Chat messages from the harness
+                if (msg.type === "chat") {
+                    addChatMessage(msg.text, "agent");
+                    return;
+                }
+
                 log(`← ${msg.command}(${JSON.stringify(msg.params).substring(0, 80)})`, "cmd");
 
                 const handler = handlers[msg.command];
@@ -431,6 +490,8 @@
             ws.onclose = () => {
                 setStatus("Disconnected — reconnecting...", "err");
                 log("Disconnected, retrying in 3s...", "err");
+                document.getElementById("chatInput").disabled = true;
+                document.getElementById("chatSend").disabled = true;
                 setTimeout(connect, 3000);
             };
 

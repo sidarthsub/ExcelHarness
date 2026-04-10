@@ -141,3 +141,33 @@ async def test_outbound_chat_sends_to_addin(server):
     assert len(received) == 1
     assert received[0]["type"] == "chat"
     assert received[0]["text"] == "hello from harness"
+
+
+async def test_chat_roundtrip_in_process(server):
+    """A user chat message goes into the queue, harness code drains it, and a reply lands back in the add-in."""
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    received_from_harness = []
+    import websockets
+    async def fake_addin():
+        uri = f"wss://{server.host}:{server.wss_port}"
+        async with websockets.connect(uri, ssl=ssl_ctx) as ws:
+            # Send a user message
+            await ws.send(json.dumps({"type": "chat", "text": "ping"}))
+            # Wait for the harness's reply
+            msg = await ws.recv()
+            received_from_harness.append(json.loads(msg))
+
+    task = asyncio.create_task(fake_addin())
+    await asyncio.sleep(0.3)
+
+    # Simulate the harness loop: drain, decide, send.
+    pending = server.chat_queue.drain_all()
+    assert pending == ["ping"]
+    await server.send_chat("pong")
+
+    await asyncio.wait_for(task, timeout=2.0)
+    assert received_from_harness[0]["type"] == "chat"
+    assert received_from_harness[0]["text"] == "pong"
