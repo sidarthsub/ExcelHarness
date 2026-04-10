@@ -35,6 +35,9 @@ class BridgeServer:
         self._runner: Optional[web.AppRunner] = None
         self._wss_server = None
         self._ssl_ctx: Optional[ssl.SSLContext] = None
+        self._addin_ws = None
+        self._pending: dict[str, asyncio.Future] = {}
+        self._msg_counter = 0
 
     async def start(self) -> None:
         self._ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -61,6 +64,23 @@ class BridgeServer:
             await self._runner.cleanup()
             self._runner = None
 
+    async def send_command(self, command: str, params: dict | None = None, timeout: float = 30.0) -> dict:
+        if self._addin_ws is None:
+            return {"error": "no add-in connected"}
+        self._msg_counter += 1
+        msg_id = f"cmd-{self._msg_counter}"
+        payload = {"id": msg_id, "command": command, "params": params or {}}
+
+        future = asyncio.get_event_loop().create_future()
+        self._pending[msg_id] = future
+        try:
+            await self._addin_ws.send(json.dumps(payload))
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            return {"error": "timeout"}
+        finally:
+            self._pending.pop(msg_id, None)
+
     async def _handle_static(self, request: web.Request) -> web.StreamResponse:
         path = request.match_info.get("path", "taskpane.html") or "taskpane.html"
         if path == "/":
@@ -73,6 +93,15 @@ class BridgeServer:
         return web.Response(status=404, text="Not found")
 
     async def _handle_addin_ws(self, websocket):
-        # Minimal stub — real message handling comes in Task 1.4.
-        async for _ in websocket:
+        self._addin_ws = websocket
+        try:
+            async for message in websocket:
+                data = json.loads(message)
+                msg_id = data.get("id")
+                if msg_id and msg_id in self._pending:
+                    self._pending[msg_id].set_result(data)
+        except websockets.exceptions.ConnectionClosed:
             pass
+        finally:
+            if self._addin_ws is websocket:
+                self._addin_ws = None
