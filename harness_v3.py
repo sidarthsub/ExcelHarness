@@ -194,6 +194,109 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
     return spec
 
 
+async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -> None:
+    """Long-running Builder loop.
+
+    Delivers turns to a Claude Agent SDK client session; between turns, drains
+    the chat queue and injects as the next user turn. Handles checkpoints by
+    snapshotting + (stubbed) evaluator + git commit.
+    """
+    prompt = (AGENTS_DIR / "builder_v3.md").read_text()
+
+    # Protect the workbook so user can't edit during build.
+    await server.send_command("protectWorkbook", {})
+
+    initial_msg = (
+        f"Begin building per the spec at {session.run_dir}/model_spec.json. "
+        f"The workbook is live at https://localhost:3000. Read the spec, "
+        f"then conventions.md, then start."
+    )
+
+    pending_messages = [initial_msg]
+    max_turns = 50
+    turn = 0
+
+    while turn < max_turns:
+        turn += 1
+        user_msg = "\n\n---\n\n".join(pending_messages)
+        pending_messages = []
+
+        # Launch a checkpoint watcher task that runs in parallel with the agent turn.
+        stop_watcher = asyncio.Event()
+        checkpoint_results: list = []
+
+        async def watch_checkpoints():
+            while not stop_watcher.is_set():
+                pending_cp = server.pop_pending_checkpoint()
+                if pending_cp is not None:
+                    # Snapshot the workbook
+                    snap_result = await server.send_command("saveSnapshot", {})
+                    xlsx_bytes = b""
+                    if snap_result.get("ok"):
+                        import base64
+                        xlsx_bytes = base64.b64decode(snap_result["base64"])
+                        snap_path = session.snapshots_dir / f"turn_{turn}.xlsx"
+                        snap_path.write_bytes(xlsx_bytes)
+                    # Stub: evaluator always passes in Phase 4
+                    verdict = {"status": "pass"}
+                    # Write committed model + git commit
+                    if xlsx_bytes:
+                        model_path = session.run_dir / "models"
+                        model_path.mkdir(exist_ok=True)
+                        committed = model_path / "model.xlsx"
+                        committed.write_bytes(xlsx_bytes)
+                        import subprocess
+                        subprocess.run(["git", "add", str(committed)], check=False, cwd=ROOT)
+                        subprocess.run(
+                            ["git", "commit", "-m", f"Checkpoint: {pending_cp.description}"],
+                            check=False,
+                            cwd=ROOT,
+                        )
+                    await server.send_chat(f"✓ Committed: {pending_cp.description}")
+                    pending_cp.resolve(verdict)
+                    checkpoint_results.append(pending_cp.description)
+                await asyncio.sleep(0.3)
+
+        watcher_task = asyncio.create_task(watch_checkpoints())
+
+        try:
+            final_text = await run_agent_session(
+                system_prompt=prompt,
+                user_messages=[user_msg],
+                allowed_tools=[
+                    "Read", "Glob", "Grep",
+                    "Write(/tmp/builder_*.py)",
+                    "Bash(python3 /tmp/builder_*.py)",
+                    "Bash(ls*)", "Bash(cat*)",
+                ],
+                cwd=ROOT,
+            )
+        finally:
+            stop_watcher.set()
+            await watcher_task
+
+        session.append_chat("agent", final_text)
+
+        # Check for completion sentinel
+        if "Model complete. Ready for review." in final_text:
+            await server.send_command("unprotectWorkbook", {})
+            await server.send_chat("Session complete. Workbook unprotected for manual edits.")
+            return
+
+        # Drain chat for next turn
+        user_msgs = server.chat_queue.drain_all()
+        if user_msgs:
+            for m in user_msgs:
+                session.append_chat("user", m)
+            pending_messages.extend(user_msgs)
+        else:
+            pending_messages.append("continue")
+
+    # Fell out of loop — max turns exceeded
+    await server.send_chat(f"Builder loop hit max turns ({max_turns}). Stopping.")
+    await server.send_command("unprotectWorkbook", {})
+
+
 async def main() -> None:
     session = Session(root=ROOT)
     print(f"[harness] Session: {session.run_dir}")
@@ -221,6 +324,9 @@ async def main() -> None:
         spec = await run_planner(session, server, brief)
         await server.send_chat(f"Spec complete: {len(spec['sheets'])} sheet(s). Saved to {session.run_dir.name}/model_spec.json")
         print(f"[harness] Spec saved. Planner phase done.")
+
+        await run_builder_loop(session, server, spec)
+        print(f"[harness] Builder loop done.")
     finally:
         await server.stop()
 
