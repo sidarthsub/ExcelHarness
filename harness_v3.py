@@ -149,7 +149,7 @@ def preprocess_inputs(session: Session, screenshots: bool = False) -> list[Path]
     return xlsx_files
 
 
-async def wait_for_addin(server: BridgeServer, timeout: float = 60.0) -> None:
+async def wait_for_addin(server: BridgeServer, timeout: float = 300.0) -> None:
     """Block until the add-in connects."""
     deadline = asyncio.get_event_loop().time() + timeout
     while server._addin_ws is None:

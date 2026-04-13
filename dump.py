@@ -163,7 +163,15 @@ def _expand_range_ref(ref: str, current_sheet: str) -> dict:
     sheet_name, cell_ref = _parse_sheet_ref(ref, current_sheet)
     try:
         min_col, min_row, max_col, max_row = range_boundaries(cell_ref)
-    except ValueError:
+    except (ValueError, TypeError):
+        return {
+            "sheet": sheet_name,
+            "ref": cell_ref,
+            "kind": "unsupported",
+            "expanded": [],
+        }
+
+    if any(v is None for v in (min_col, min_row, max_col, max_row)):
         return {
             "sheet": sheet_name,
             "ref": cell_ref,
