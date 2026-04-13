@@ -53,6 +53,7 @@ async def run_agent_session(
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
         allowed_tools=allowed_tools,
+        permission_mode="acceptEdits",
         cwd=str(cwd),
     )
 
