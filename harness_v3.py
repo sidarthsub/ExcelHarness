@@ -552,25 +552,33 @@ async def main() -> None:
         await wait_for_addin(server)
         print("[harness] Add-in connected.")
 
-        brief = await ask_user(server, f"Hi. What would you like to build? Drop input files into {session.input_dir} first, then paste your brief.")
-        session.save_brief(brief)
-        session.append_chat("user", brief)
-
-        # Preprocess input xlsx files — text dumps only (no screenshots for Planner)
-        xlsx_files = preprocess_inputs(session, screenshots=False)
-        if xlsx_files:
-            await server.send_chat(f"Preprocessed {len(xlsx_files)} input file(s). Starting planning...")
+        # Check if spec already exists (resume from Builder phase)
+        spec_path = session.run_dir / "model_spec.json"
+        if spec_path.exists():
+            spec = json.loads(spec_path.read_text())
+            await server.send_chat(f"Resuming with existing spec ({len(spec['sheets'])} sheets). Starting Builder...")
+            print(f"[harness] Found existing spec. Skipping Planner, jumping to Builder.")
         else:
-            await server.send_chat("No input xlsx files found. Starting planning...")
+            brief = await ask_user(server, f"Hi. What would you like to build? Drop input files into {session.input_dir} first, then paste your brief.")
+            session.save_brief(brief)
+            session.append_chat("user", brief)
 
-        spec = await run_planner(session, server, brief)
-        await server.send_chat(f"Spec complete: {len(spec['sheets'])} sheet(s). Saved to {session.run_dir.name}/model_spec.json")
-        print(f"[harness] Spec saved. Planner phase done.")
+            # Preprocess input xlsx files — text dumps only (no screenshots for Planner)
+            xlsx_files = preprocess_inputs(session, screenshots=False)
+            if xlsx_files:
+                await server.send_chat(f"Preprocessed {len(xlsx_files)} input file(s). Starting planning...")
+            else:
+                await server.send_chat("No input xlsx files found. Starting planning...")
 
-        # Render screenshots of input files for Builder (visual reference)
-        if xlsx_files:
-            await server.send_chat("Rendering input screenshots for Builder...")
-            preprocess_inputs(session, screenshots=True)
+            spec = await run_planner(session, server, brief)
+            await server.send_chat(f"Spec complete: {len(spec['sheets'])} sheet(s). Saved to {session.run_dir.name}/model_spec.json")
+            print(f"[harness] Spec saved. Planner phase done.")
+
+            # Render screenshots of input files for Builder (visual reference)
+            xlsx_files = sorted(session.input_dir.glob("*.xlsx")) + sorted(session.input_dir.glob("*.xls"))
+            if xlsx_files:
+                await server.send_chat("Rendering input screenshots for Builder...")
+                preprocess_inputs(session, screenshots=True)
 
         await run_builder_loop(session, server, spec)
         print(f"[harness] Builder loop done.")
