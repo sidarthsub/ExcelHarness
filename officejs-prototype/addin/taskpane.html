@@ -451,43 +451,65 @@
                 // Use the Common API (Office.context.document.getFileAsync) to get
                 // the workbook as a base64-encoded xlsx. getFileInBase64() doesn't
                 // exist on Mac Excel.
+                log("saveSnapshot: starting getFileAsync...", "cmd");
                 return new Promise((resolve) => {
-                    Office.context.document.getFileAsync(
-                        Office.FileType.Compressed,
-                        { sliceSize: 4194304 },
-                        (result) => {
-                            if (result.status !== Office.AsyncResultStatus.Succeeded) {
-                                resolve({ error: result.error.message || "getFileAsync failed" });
-                                return;
-                            }
+                    try {
+                        Office.context.document.getFileAsync(
+                            Office.FileType.Compressed,
+                            { sliceSize: 4194304 },
+                            (result) => {
+                                log(`saveSnapshot: callback fired, status=${result.status}`, "cmd");
+                                if (result.status !== Office.AsyncResultStatus.Succeeded) {
+                                    log(`saveSnapshot: FAILED - ${result.error?.message || result.error}`, "err");
+                                    resolve({ error: result.error?.message || "getFileAsync failed" });
+                                    return;
+                                }
                             const file = result.value;
                             const sliceCount = file.sliceCount;
+                            log(`saveSnapshot: ${sliceCount} slice(s) to read`, "cmd");
                             const slices = [];
                             let received = 0;
 
                             function getSlice(index) {
+                                log(`saveSnapshot: reading slice ${index+1}/${sliceCount}...`, "cmd");
                                 file.getSliceAsync(index, (sliceResult) => {
                                     if (sliceResult.status !== Office.AsyncResultStatus.Succeeded) {
+                                        log(`saveSnapshot: slice ${index} FAILED - ${sliceResult.error?.message || sliceResult.error}`, "err");
                                         file.closeAsync();
-                                        resolve({ error: sliceResult.error.message || "getSliceAsync failed" });
+                                        resolve({ error: sliceResult.error?.message || "getSliceAsync failed" });
                                         return;
                                     }
-                                    slices[index] = sliceResult.value.data;
+                                    // Mac returns a plain Array of byte values, not a Uint8Array.
+                                    const raw = sliceResult.value.data;
+                                    const sliceBytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+                                    slices[index] = sliceBytes;
                                     received++;
+                                    log(`saveSnapshot: slice ${index+1} done (${sliceBytes.length} bytes), ${received}/${sliceCount}`, "cmd");
                                     if (received === sliceCount) {
                                         file.closeAsync();
-                                        const totalLength = slices.reduce((sum, s) => sum + s.byteLength, 0);
+                                        log(`saveSnapshot: all slices received, assembling...`, "cmd");
+                                        const totalLength = slices.reduce((sum, s) => sum + s.length, 0);
+                                        log(`saveSnapshot: total ${totalLength} bytes, converting to base64...`, "cmd");
                                         const combined = new Uint8Array(totalLength);
                                         let offset = 0;
                                         for (const slice of slices) {
-                                            combined.set(new Uint8Array(slice), offset);
-                                            offset += slice.byteLength;
+                                            combined.set(slice, offset);
+                                            offset += slice.length;
                                         }
-                                        let binary = "";
-                                        for (let i = 0; i < combined.length; i++) {
-                                            binary += String.fromCharCode(combined[i]);
-                                        }
-                                        resolve({ ok: true, base64: btoa(binary) });
+                                        // Use Blob + FileReader for efficient base64 conversion
+                                        const blob = new Blob([combined]);
+                                        const reader = new FileReader();
+                                        reader.onloadend = () => {
+                                            // result is "data:application/octet-stream;base64,XXXX"
+                                            const b64 = reader.result.split(",")[1];
+                                            log(`saveSnapshot: base64 ready (${b64.length} chars)`, "ok");
+                                            resolve({ ok: true, base64: b64 });
+                                        };
+                                        reader.onerror = () => {
+                                            log(`saveSnapshot: FileReader error`, "err");
+                                            resolve({ error: "base64 conversion failed" });
+                                        };
+                                        reader.readAsDataURL(blob);
                                     } else {
                                         getSlice(index + 1);
                                     }
@@ -496,6 +518,10 @@
                             getSlice(0);
                         }
                     );
+                    } catch (e) {
+                        log(`saveSnapshot: exception - ${e.message}`, "err");
+                        resolve({ error: e.message });
+                    }
                 });
             },
 
