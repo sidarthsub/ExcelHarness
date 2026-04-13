@@ -256,7 +256,16 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
     # --- Load, validate, optionally retry on schema failure ---
     spec_path = session.run_dir / "model_spec.json"
     if not spec_path.exists():
-        raise RuntimeError("Planner did not write model_spec.json")
+        # Planner returned the spec as text instead of using Write tool — extract it
+        m = re.search(r"```json\s*(\{.*?\})\s*```", pass2_text, re.DOTALL)
+        if not m:
+            m = re.search(r"\{.*\}", pass2_text, re.DOTALL)
+        if m:
+            extracted = m.group(1) if m.lastindex else m.group(0)
+            spec_path.write_text(extracted)
+            await server.send_chat("Spec extracted from Planner response (tool didn't fire). Validating...")
+        else:
+            raise RuntimeError("Planner did not write model_spec.json and no JSON found in response")
 
     spec = json.loads(spec_path.read_text())
     try:
