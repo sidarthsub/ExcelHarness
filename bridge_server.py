@@ -70,7 +70,8 @@ class BridgeServer:
         await site.start()
 
         self._wss_server = await websockets.serve(
-            self._handle_addin_ws, self.host, self.wss_port, ssl=self._ssl_ctx
+            self._handle_addin_ws, self.host, self.wss_port, ssl=self._ssl_ctx,
+            max_size=64 * 1024 * 1024,  # 64 MiB for large workbook snapshots
         )
 
     async def stop(self) -> None:
@@ -100,9 +101,13 @@ class BridgeServer:
             self._pending.pop(msg_id, None)
 
     async def send_chat(self, text: str) -> None:
-        if self._addin_ws is None:
+        ws = self._addin_ws
+        if ws is None:
             return
-        await self._addin_ws.send(json.dumps({"type": "chat", "text": text}))
+        try:
+            await ws.send(json.dumps({"type": "chat", "text": text}))
+        except websockets.exceptions.ConnectionClosed:
+            pass
 
     async def _handle_api_command(self, request: web.Request) -> web.Response:
         try:

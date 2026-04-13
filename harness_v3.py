@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import signal
 import sys
 from pathlib import Path
@@ -82,7 +83,7 @@ async def ask_user(server: BridgeServer, prompt: str) -> str:
     while True:
         pending = server.chat_queue.drain_all()
         if pending:
-            return pending[0]
+            return pending[-1]
         await asyncio.sleep(0.3)
 
 
@@ -109,8 +110,7 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
         questions = json.loads(pass1_text.strip())
     except json.JSONDecodeError:
         # Try to extract JSON from markdown code block
-        import re
-        m = re.search(r"\[.*?\]", pass1_text, re.DOTALL)
+        m = re.search(r"\[.*\]", pass1_text, re.DOTALL)
         if m:
             questions = json.loads(m.group(0))
         else:
@@ -173,7 +173,11 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
             cwd=ROOT,
         )
         spec = json.loads(spec_path.read_text())
-        jsonschema.validate(instance=spec, schema=schema)
+        try:
+            jsonschema.validate(instance=spec, schema=schema)
+        except jsonschema.ValidationError as e:
+            await server.send_chat(f"Planner failed to produce a valid spec after retry: {e.message}. Aborting.")
+            raise
 
     # --- Pass 3: Self-review ---
     pass3_user = (
@@ -262,16 +266,18 @@ async def run_evaluator(session: Session, eval_dir: Path) -> dict:
         cwd=ROOT,
     )
 
-    # Extract JSON from response
-    import re
-    m = re.search(r"\{.*\}", result_text, re.DOTALL)
+    # Extract JSON from response — try fenced JSON block first
+    m = re.search(r"```json\s*(\{.*?\})\s*```", result_text, re.DOTALL)
+    if not m:
+        # Fallback: find outermost {...}
+        m = re.search(r"\{.*\}", result_text, re.DOTALL)
     if not m:
         return {
             "status": "fail",
             "findings": [{"severity": "error", "issue": "Evaluator did not return JSON"}],
         }
     try:
-        verdict = json.loads(m.group(0))
+        verdict = json.loads(m.group(1) if m.lastindex else m.group(0))
     except json.JSONDecodeError as e:
         return {
             "status": "fail",
@@ -312,46 +318,68 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
         checkpoint_results: list = []
 
         async def watch_checkpoints():
+            import subprocess
             while not stop_watcher.is_set():
                 pending_cp = server.pop_pending_checkpoint()
                 if pending_cp is not None:
-                    # Prepare eval input (snapshot + dumps + screenshots)
-                    eval_dir, xlsx_bytes = await prepare_eval_input(
-                        session, server, pending_cp.description, spec, turn
-                    )
-
-                    # Run the real Evaluator
-                    verdict = await run_evaluator(session, eval_dir)
-
-                    # Only commit on PASS
-                    if verdict.get("status") == "pass" and xlsx_bytes:
-                        model_path = session.run_dir / "models"
-                        model_path.mkdir(exist_ok=True)
-                        committed = model_path / "model.xlsx"
-                        committed.write_bytes(xlsx_bytes)
-                        import subprocess
-                        subprocess.run(["git", "add", str(committed)], check=False, cwd=ROOT)
-                        subprocess.run(
-                            ["git", "commit", "-m", f"Checkpoint: {pending_cp.description}"],
-                            check=False,
-                            cwd=ROOT,
-                        )
-                        await server.send_chat(f"✓ {pending_cp.description}")
-                    else:
-                        # FAIL (or snapshot failed): don't commit. Pass findings back to Builder.
-                        findings_text = "\n".join(
-                            f"  - [{f.get('severity', 'error')}] "
-                            f"{f.get('sheet', '')}"
-                            f"{(':' + f['cell']) if f.get('cell') else ''}: "
-                            f"{f.get('issue', '')}"
-                            for f in verdict.get("findings", [])
-                        )
-                        await server.send_chat(
-                            f"✗ Evaluator FAIL: {pending_cp.description}\n{findings_text}"
+                    try:
+                        # Prepare eval input (snapshot + dumps + screenshots)
+                        eval_dir, xlsx_bytes = await prepare_eval_input(
+                            session, server, pending_cp.description, spec, turn
                         )
 
-                    pending_cp.resolve(verdict)
-                    checkpoint_results.append(pending_cp.description)
+                        # Run the real Evaluator
+                        verdict = await run_evaluator(session, eval_dir)
+
+                        # C2: Override pass verdict if snapshot failed
+                        if verdict.get("status") == "pass" and not xlsx_bytes:
+                            verdict = {"status": "fail", "findings": [{"severity": "error", "issue": "Workbook snapshot failed — cannot commit checkpoint."}]}
+
+                        # M1: Persist evaluator verdict
+                        verdicts_dir = session.run_dir / "eval_verdicts"
+                        verdicts_dir.mkdir(exist_ok=True)
+                        (verdicts_dir / f"turn_{turn}.json").write_text(json.dumps(verdict, indent=2))
+
+                        # Only commit on PASS
+                        if verdict.get("status") == "pass" and xlsx_bytes:
+                            model_path = session.run_dir / "models"
+                            model_path.mkdir(exist_ok=True)
+                            committed = model_path / "model.xlsx"
+                            committed.write_bytes(xlsx_bytes)
+                            add_result = subprocess.run(["git", "add", str(committed)], capture_output=True, text=True, cwd=ROOT)
+                            if add_result.returncode != 0:
+                                await server.send_chat(f"Warning: git add failed: {add_result.stderr.strip()}")
+                            else:
+                                commit_result = subprocess.run(
+                                    ["git", "commit", "-m", f"Checkpoint: {pending_cp.description}"],
+                                    capture_output=True, text=True,
+                                    cwd=ROOT,
+                                )
+                                if commit_result.returncode != 0:
+                                    await server.send_chat(f"Warning: git commit failed: {commit_result.stderr.strip()}")
+                            await server.send_chat(f"✓ {pending_cp.description}")
+                        else:
+                            # FAIL (or snapshot failed): don't commit. Pass findings back to Builder.
+                            findings_text = "\n".join(
+                                f"  - [{f.get('severity', 'error')}] "
+                                f"{f.get('sheet', '')}"
+                                f"{(':' + f['cell']) if f.get('cell') else ''}: "
+                                f"{f.get('issue', '')}"
+                                for f in verdict.get("findings", [])
+                            )
+                            await server.send_chat(
+                                f"✗ Evaluator FAIL: {pending_cp.description}\n{findings_text}"
+                            )
+
+                        pending_cp.resolve(verdict)
+                        checkpoint_results.append(pending_cp.description)
+                    except Exception as e:
+                        if pending_cp is not None:
+                            pending_cp.resolve({"status": "fail", "findings": [{"severity": "error", "issue": f"Checkpoint handler crashed: {e}"}]})
+                        try:
+                            await server.send_chat(f"Checkpoint handler error: {e}")
+                        except Exception:
+                            pass
                 await asyncio.sleep(0.3)
 
         watcher_task = asyncio.create_task(watch_checkpoints())
@@ -425,6 +453,10 @@ async def main() -> None:
         await run_builder_loop(session, server, spec)
         print(f"[harness] Builder loop done.")
     finally:
+        try:
+            await server.send_command("unprotectWorkbook", {})
+        except Exception:
+            pass
         await server.stop()
 
 

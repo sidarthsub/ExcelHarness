@@ -37,9 +37,9 @@ runs/<session>/eval_input/
 │   ├── Revenue.json
 │   └── ...
 └── screenshots/
-    ├── page-01.png
-    ├── page-02.png
-    └── ...
+    ├── turn_N_page-1.png
+    ├── turn_N_page-2.png
+    └── ...           (PNG files, one per sheet page)
 ```
 
 ## Your output

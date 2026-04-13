@@ -14,7 +14,7 @@ class BridgeError(Exception):
 
 
 class Bridge:
-    def __init__(self, base_url: str = "https://localhost:3000", verify_tls: bool = True, timeout: float = 30.0):
+    def __init__(self, base_url: str = "https://localhost:3000", verify_tls: bool = True, timeout: float = 60.0):
         self.base_url = base_url.rstrip("/")
         self.verify = verify_tls
         self.timeout = timeout

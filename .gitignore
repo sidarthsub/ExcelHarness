@@ -1,5 +1,4 @@
 # v3 per-session artifacts
-runs/
 models/*.xlsx
 !models/.gitkeep
 
