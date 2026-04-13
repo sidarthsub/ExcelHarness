@@ -416,8 +416,10 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
     """
     prompt = (AGENTS_DIR / "builder_v3.md").read_text()
 
-    # Protect the workbook so user can't edit during build.
-    await server.send_command("protectWorkbook", {})
+    # Protect the workbook so user can't edit during build (non-fatal if it fails).
+    protect_result = await server.send_command("protectWorkbook", {})
+    if protect_result.get("error"):
+        print(f"[harness] Workbook protection failed (non-fatal): {protect_result['error']}")
 
     # Create a stateful client that persists across turns.
     options = ClaudeAgentOptions(
