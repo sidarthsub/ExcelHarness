@@ -11,9 +11,10 @@ class Session:
         self.root = Path(root)
         self.timestamp = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S")
         self.run_dir = self.root / "runs" / self.timestamp
+        self.input_dir = self.run_dir / "input"
         self.snapshots_dir = self.run_dir / "snapshots"
         self.screenshots_dir = self.run_dir / "screenshots"
-        for d in (self.run_dir, self.snapshots_dir, self.screenshots_dir):
+        for d in (self.run_dir, self.input_dir, self.snapshots_dir, self.screenshots_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     def save_brief(self, text: str) -> None:
