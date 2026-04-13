@@ -504,8 +504,9 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
     watcher_task = asyncio.create_task(watch_checkpoints())
 
     try:
-        # Connect and send first message
-        await client.connect(prompt=initial_msg)
+        # Connect (starts the subprocess), then send first message
+        await client.connect()
+        await client.query(initial_msg)
 
         while turn < max_turns:
             turn += 1
@@ -550,7 +551,7 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
                 next_prompt = "continue"
 
             # Send next turn to the stateful client
-            client.query(next_prompt)
+            await client.query(next_prompt)
 
     finally:
         stop_watcher.set()
