@@ -86,6 +86,69 @@ async def run_agent_session(
     return final_text
 
 
+def preprocess_inputs(session: Session, screenshots: bool = False) -> list[Path]:
+    """Run dump.py on each xlsx in the session's input directory.
+
+    Produces text dumps (formulas, values, styles) into input/dumps/.
+    Optionally renders screenshots (slow — only needed for Builder, not Planner).
+    Returns list of xlsx files found.
+    """
+    import subprocess
+    input_dir = session.input_dir
+    xlsx_files = sorted(input_dir.glob("*.xlsx")) + sorted(input_dir.glob("*.xls"))
+    if not xlsx_files:
+        return []
+
+    dumps_dir = input_dir / "dumps"
+    dumps_dir.mkdir(exist_ok=True)
+
+    # dump.py writes to ROOT/evals/ by default. We'll run it, then move results
+    # into the session's input/dumps/ directory.
+    evals_dir = ROOT / "evals"
+    for xlsx in xlsx_files:
+        print(f"[harness] Preprocessing {xlsx.name}...")
+        # Clear evals/ so we get only this file's output
+        import shutil
+        if evals_dir.exists():
+            shutil.rmtree(evals_dir)
+
+        # Run dump.py — it writes to ROOT/evals/
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "dump.py"), str(xlsx)],
+            capture_output=True, text=True, cwd=str(ROOT),
+        )
+        if result.returncode != 0:
+            print(f"[harness] Warning: dump.py failed on {xlsx.name}: {result.stderr[:200]}")
+            continue
+
+        # Move text dumps into input/dumps/<filename>/
+        file_dumps = dumps_dir / xlsx.stem
+        file_dumps.mkdir(exist_ok=True)
+        for subdir in ["formulas", "formulas_json", "styles", "values"]:
+            src = evals_dir / subdir
+            if src.exists():
+                dst = file_dumps / subdir
+                if dst.exists():
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+
+        # Screenshots only if requested (slow, Planner doesn't need them)
+        if screenshots:
+            src = evals_dir / "screenshots"
+            if src.exists():
+                dst = file_dumps / "screenshots"
+                if dst.exists():
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+
+    # Clean up the global evals/ directory
+    import shutil
+    if evals_dir.exists():
+        shutil.rmtree(evals_dir)
+
+    return xlsx_files
+
+
 async def wait_for_addin(server: BridgeServer, timeout: float = 60.0) -> None:
     """Block until the add-in connects."""
     deadline = asyncio.get_event_loop().time() + timeout
@@ -472,14 +535,25 @@ async def main() -> None:
         await wait_for_addin(server)
         print("[harness] Add-in connected.")
 
-        brief = await ask_user(server, "Hi. What would you like to build? Paste your brief (and attach files separately to runs/<session>/input/).")
+        brief = await ask_user(server, f"Hi. What would you like to build? Drop input files into {session.input_dir} first, then paste your brief.")
         session.save_brief(brief)
         session.append_chat("user", brief)
 
-        await server.send_chat("Thanks. Starting planning...")
+        # Preprocess input xlsx files — text dumps only (no screenshots for Planner)
+        xlsx_files = preprocess_inputs(session, screenshots=False)
+        if xlsx_files:
+            await server.send_chat(f"Preprocessed {len(xlsx_files)} input file(s). Starting planning...")
+        else:
+            await server.send_chat("No input xlsx files found. Starting planning...")
+
         spec = await run_planner(session, server, brief)
         await server.send_chat(f"Spec complete: {len(spec['sheets'])} sheet(s). Saved to {session.run_dir.name}/model_spec.json")
         print(f"[harness] Spec saved. Planner phase done.")
+
+        # Render screenshots of input files for Builder (visual reference)
+        if xlsx_files:
+            await server.send_chat("Rendering input screenshots for Builder...")
+            preprocess_inputs(session, screenshots=True)
 
         await run_builder_loop(session, server, spec)
         print(f"[harness] Builder loop done.")
