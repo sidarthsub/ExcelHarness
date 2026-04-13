@@ -68,7 +68,7 @@ async def run_agent_session(
         allowed_tools=allowed_tools,
         permission_mode="bypassPermissions",
         cwd=str(cwd),
-        env={**os.environ, **AGENT_ENV} if AGENT_ENV else None,
+        env={**os.environ, **AGENT_ENV} if AGENT_ENV else {},
     )
 
     combined = "\n\n---\n\n".join(user_messages)
