@@ -53,7 +53,7 @@ async def run_agent_session(
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
         allowed_tools=allowed_tools,
-        permission_mode="acceptEdits",
+        permission_mode="bypassPermissions",
         cwd=str(cwd),
     )
 
@@ -554,10 +554,12 @@ async def main() -> None:
 
         # Check if spec already exists (resume from Builder phase)
         spec_path = session.run_dir / "model_spec.json"
+        print(f"[harness] Checking for spec at {spec_path} ... exists={spec_path.exists()}")
         if spec_path.exists():
             spec = json.loads(spec_path.read_text())
+            print(f"[harness] Found existing spec with {len(spec['sheets'])} sheets. Sending chat...")
             await server.send_chat(f"Resuming with existing spec ({len(spec['sheets'])} sheets). Starting Builder...")
-            print(f"[harness] Found existing spec. Skipping Planner, jumping to Builder.")
+            print(f"[harness] Chat sent. Jumping to Builder.")
         else:
             brief = await ask_user(server, f"Hi. What would you like to build? Drop input files into {session.input_dir} first, then paste your brief.")
             session.save_brief(brief)
