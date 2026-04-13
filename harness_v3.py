@@ -22,7 +22,7 @@ from pathlib import Path
 from bridge_server import BridgeServer
 from session import Session
 
-from claude_agent_sdk import query
+from claude_agent_sdk import query, ClaudeSDKClient
 from claude_agent_sdk.types import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -408,139 +408,157 @@ async def run_evaluator(session: Session, eval_dir: Path) -> dict:
 
 
 async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -> None:
-    """Long-running Builder loop.
+    """Long-running Builder loop using a stateful ClaudeSDKClient.
 
-    Delivers turns to a Claude Agent SDK client session; between turns, drains
-    the chat queue and injects as the next user turn. Handles checkpoints by
-    snapshotting + (stubbed) evaluator + git commit.
+    The client maintains conversation state across turns, so the Builder
+    remembers what it built. Between turns, the harness drains the chat
+    queue and injects user messages as the next prompt.
     """
     prompt = (AGENTS_DIR / "builder_v3.md").read_text()
 
     # Protect the workbook so user can't edit during build.
     await server.send_command("protectWorkbook", {})
 
+    # Create a stateful client that persists across turns.
+    options = ClaudeAgentOptions(
+        system_prompt=prompt,
+        allowed_tools=[
+            "Read", "Glob", "Grep",
+            "Write(/tmp/builder_*.py)",
+            "Bash(python3 /tmp/builder_*.py)",
+            "Bash(ls*)", "Bash(cat*)",
+        ],
+        permission_mode="bypassPermissions",
+        cwd=str(ROOT),
+        env={**os.environ, **AGENT_ENV} if AGENT_ENV else {},
+    )
+    client = ClaudeSDKClient(options=options)
+
     initial_msg = (
         f"Begin building per the spec at {session.run_dir}/model_spec.json. "
         f"The workbook is live at https://localhost:3000. Read the spec, "
-        f"then conventions.md, then start."
+        f"then conventions.md, then start. "
+        f"IMPORTANT: After writing data to any sheet, always call b.auto_fit_columns(sheet_name) "
+        f"to ensure columns are wide enough to display their content."
     )
 
-    pending_messages = [initial_msg]
     max_turns = 50
     turn = 0
+    checkpoint_count = 0
 
-    while turn < max_turns:
-        turn += 1
-        user_msg = "\n\n---\n\n".join(pending_messages)
-        pending_messages = []
+    # Start the checkpoint watcher — runs for the entire builder session.
+    stop_watcher = asyncio.Event()
 
-        # Launch a checkpoint watcher task that runs in parallel with the agent turn.
-        stop_watcher = asyncio.Event()
-        checkpoint_results: list = []
+    async def watch_checkpoints():
+        import subprocess
+        nonlocal checkpoint_count
+        while not stop_watcher.is_set():
+            pending_cp = server.pop_pending_checkpoint()
+            if pending_cp is not None:
+                checkpoint_count += 1
+                try:
+                    eval_dir, xlsx_bytes = await prepare_eval_input(
+                        session, server, pending_cp.description, spec, checkpoint_count
+                    )
+                    verdict = await run_evaluator(session, eval_dir)
 
-        async def watch_checkpoints():
-            import subprocess
-            while not stop_watcher.is_set():
-                pending_cp = server.pop_pending_checkpoint()
-                if pending_cp is not None:
-                    try:
-                        # Prepare eval input (snapshot + dumps + screenshots)
-                        eval_dir, xlsx_bytes = await prepare_eval_input(
-                            session, server, pending_cp.description, spec, turn
+                    if verdict.get("status") == "pass" and not xlsx_bytes:
+                        verdict = {"status": "fail", "findings": [{"severity": "error", "issue": "Workbook snapshot failed — cannot commit checkpoint."}]}
+
+                    verdicts_dir = session.run_dir / "eval_verdicts"
+                    verdicts_dir.mkdir(exist_ok=True)
+                    (verdicts_dir / f"checkpoint_{checkpoint_count}.json").write_text(json.dumps(verdict, indent=2))
+
+                    if verdict.get("status") == "pass" and xlsx_bytes:
+                        model_path = session.run_dir / "models"
+                        model_path.mkdir(exist_ok=True)
+                        committed = model_path / "model.xlsx"
+                        committed.write_bytes(xlsx_bytes)
+                        add_result = subprocess.run(["git", "add", str(committed)], capture_output=True, text=True, cwd=ROOT)
+                        if add_result.returncode == 0:
+                            subprocess.run(
+                                ["git", "commit", "-m", f"Checkpoint: {pending_cp.description}"],
+                                capture_output=True, text=True, cwd=ROOT,
+                            )
+                        await server.send_chat(f"✓ {pending_cp.description}")
+                    else:
+                        findings_text = "\n".join(
+                            f"  - [{f.get('severity', 'error')}] "
+                            f"{f.get('sheet', '')}"
+                            f"{(':' + f['cell']) if f.get('cell') else ''}: "
+                            f"{f.get('issue', '')}"
+                            for f in verdict.get("findings", [])
                         )
+                        await server.send_chat(f"✗ Evaluator FAIL: {pending_cp.description}\n{findings_text}")
 
-                        # Run the real Evaluator
-                        verdict = await run_evaluator(session, eval_dir)
+                    pending_cp.resolve(verdict)
+                except Exception as e:
+                    if pending_cp is not None:
+                        pending_cp.resolve({"status": "fail", "findings": [{"severity": "error", "issue": f"Checkpoint handler crashed: {e}"}]})
+                    try:
+                        await server.send_chat(f"Checkpoint handler error: {e}")
+                    except Exception:
+                        pass
+            await asyncio.sleep(0.3)
 
-                        # C2: Override pass verdict if snapshot failed
-                        if verdict.get("status") == "pass" and not xlsx_bytes:
-                            verdict = {"status": "fail", "findings": [{"severity": "error", "issue": "Workbook snapshot failed — cannot commit checkpoint."}]}
+    watcher_task = asyncio.create_task(watch_checkpoints())
 
-                        # M1: Persist evaluator verdict
-                        verdicts_dir = session.run_dir / "eval_verdicts"
-                        verdicts_dir.mkdir(exist_ok=True)
-                        (verdicts_dir / f"turn_{turn}.json").write_text(json.dumps(verdict, indent=2))
+    try:
+        # Connect and send first message
+        await client.connect(prompt=initial_msg)
 
-                        # Only commit on PASS
-                        if verdict.get("status") == "pass" and xlsx_bytes:
-                            model_path = session.run_dir / "models"
-                            model_path.mkdir(exist_ok=True)
-                            committed = model_path / "model.xlsx"
-                            committed.write_bytes(xlsx_bytes)
-                            add_result = subprocess.run(["git", "add", str(committed)], capture_output=True, text=True, cwd=ROOT)
-                            if add_result.returncode != 0:
-                                await server.send_chat(f"Warning: git add failed: {add_result.stderr.strip()}")
-                            else:
-                                commit_result = subprocess.run(
-                                    ["git", "commit", "-m", f"Checkpoint: {pending_cp.description}"],
-                                    capture_output=True, text=True,
-                                    cwd=ROOT,
-                                )
-                                if commit_result.returncode != 0:
-                                    await server.send_chat(f"Warning: git commit failed: {commit_result.stderr.strip()}")
-                            await server.send_chat(f"✓ {pending_cp.description}")
-                        else:
-                            # FAIL (or snapshot failed): don't commit. Pass findings back to Builder.
-                            findings_text = "\n".join(
-                                f"  - [{f.get('severity', 'error')}] "
-                                f"{f.get('sheet', '')}"
-                                f"{(':' + f['cell']) if f.get('cell') else ''}: "
-                                f"{f.get('issue', '')}"
-                                for f in verdict.get("findings", [])
-                            )
-                            await server.send_chat(
-                                f"✗ Evaluator FAIL: {pending_cp.description}\n{findings_text}"
-                            )
+        while turn < max_turns:
+            turn += 1
+            final_text = ""
 
-                        pending_cp.resolve(verdict)
-                        checkpoint_results.append(pending_cp.description)
-                    except Exception as e:
-                        if pending_cp is not None:
-                            pending_cp.resolve({"status": "fail", "findings": [{"severity": "error", "issue": f"Checkpoint handler crashed: {e}"}]})
-                        try:
-                            await server.send_chat(f"Checkpoint handler error: {e}")
-                        except Exception:
-                            pass
-                await asyncio.sleep(0.3)
+            # Stream responses for this turn
+            async for message in client.receive_messages():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            final_text = block.text
+                        elif isinstance(block, ToolUseBlock):
+                            tool_name = block.name
+                            tool_input = block.input or {}
+                            if tool_name == "Write":
+                                path = tool_input.get("file_path", "")
+                                short = path.split("/")[-1] if "/" in str(path) else path
+                                await server.send_chat(f"Writing {short}...")
+                            elif tool_name == "Bash":
+                                cmd = str(tool_input.get("command", ""))
+                                if "python3 /tmp/builder" in cmd:
+                                    await server.send_chat(f"Running build script...")
+                elif isinstance(message, ResultMessage):
+                    # Turn complete
+                    break
 
-        watcher_task = asyncio.create_task(watch_checkpoints())
+            session.append_chat("agent", final_text)
 
-        async def builder_status(msg: str):
-            await server.send_chat(msg)
+            # Check for completion sentinel
+            if "Model complete. Ready for review." in final_text:
+                await server.send_command("unprotectWorkbook", {})
+                await server.send_chat("Session complete. Workbook unprotected for manual edits.")
+                return
 
+            # Drain chat for next turn
+            user_msgs = server.chat_queue.drain_all()
+            if user_msgs:
+                for m in user_msgs:
+                    session.append_chat("user", m)
+                next_prompt = "\n\n".join(user_msgs)
+            else:
+                next_prompt = "continue"
+
+            # Send next turn to the stateful client
+            client.query(next_prompt)
+
+    finally:
+        stop_watcher.set()
+        await watcher_task
         try:
-            final_text = await run_agent_session(
-                system_prompt=prompt,
-                user_messages=[user_msg],
-                allowed_tools=[
-                    "Read", "Glob", "Grep",
-                    "Write(/tmp/builder_*.py)",
-                    "Bash(python3 /tmp/builder_*.py)",
-                    "Bash(ls*)", "Bash(cat*)",
-                ],
-                cwd=ROOT,
-                on_activity=builder_status,
-            )
-        finally:
-            stop_watcher.set()
-            await watcher_task
-
-        session.append_chat("agent", final_text)
-
-        # Check for completion sentinel
-        if "Model complete. Ready for review." in final_text:
-            await server.send_command("unprotectWorkbook", {})
-            await server.send_chat("Session complete. Workbook unprotected for manual edits.")
-            return
-
-        # Drain chat for next turn
-        user_msgs = server.chat_queue.drain_all()
-        if user_msgs:
-            for m in user_msgs:
-                session.append_chat("user", m)
-            pending_messages.extend(user_msgs)
-        else:
-            pending_messages.append("continue")
+            await client.disconnect()
+        except Exception:
+            pass
 
     # Fell out of loop — max turns exceeded
     await server.send_chat(f"Builder loop hit max turns ({max_turns}). Stopping.")

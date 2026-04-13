@@ -70,6 +70,12 @@ class Bridge:
     def set_row_heights(self, sheet: str, rows: dict) -> dict:
         return self._call("setRowHeights", {"sheet": sheet, "rows": rows})
 
+    def auto_fit_columns(self, sheet: str, address: str | None = None) -> dict:
+        return self._call("autoFitColumns", {"sheet": sheet, "address": address})
+
+    def auto_fit_rows(self, sheet: str, address: str | None = None) -> dict:
+        return self._call("autoFitRows", {"sheet": sheet, "address": address})
+
     def merge_cells(self, sheet: str, address: str) -> dict:
         return self._call("mergeCells", {"sheet": sheet, "address": address})
 

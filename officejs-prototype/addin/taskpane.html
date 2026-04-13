@@ -208,6 +208,26 @@
                 });
             },
 
+            async autoFitColumns({ sheet, address }) {
+                return Excel.run(async (ctx) => {
+                    const ws = ctx.workbook.worksheets.getItem(sheet);
+                    const range = address ? ws.getRange(address) : ws.getUsedRange();
+                    range.format.autofitColumns();
+                    await ctx.sync();
+                    return { ok: true };
+                });
+            },
+
+            async autoFitRows({ sheet, address }) {
+                return Excel.run(async (ctx) => {
+                    const ws = ctx.workbook.worksheets.getItem(sheet);
+                    const range = address ? ws.getRange(address) : ws.getUsedRange();
+                    range.format.autofitRows();
+                    await ctx.sync();
+                    return { ok: true };
+                });
+            },
+
             async setRowHeights({ sheet, rows }) {
                 return Excel.run(async (ctx) => {
                     const ws = ctx.workbook.worksheets.getItem(sheet);
