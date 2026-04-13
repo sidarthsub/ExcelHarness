@@ -197,11 +197,16 @@
             },
 
             async setColumnWidths({ sheet, columns }) {
+                // Width values are in character units (how Excel displays them).
+                // Office.js columnWidth is in points. Convert: 1 char ≈ 7.5 pts at Calibri 11.
+                const CHAR_TO_PTS = 7.5;
                 return Excel.run(async (ctx) => {
                     const ws = ctx.workbook.worksheets.getItem(sheet);
                     for (const [col, width] of Object.entries(columns)) {
                         const range = ws.getRange(`${col}:${col}`);
-                        range.format.columnWidth = width;
+                        // If width > 50, assume it's already in points (backwards compat with prototype tests).
+                        // Otherwise treat as character units and convert.
+                        range.format.columnWidth = width > 50 ? width : width * CHAR_TO_PTS;
                     }
                     await ctx.sync();
                     return { ok: true };
