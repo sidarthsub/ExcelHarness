@@ -2,6 +2,9 @@
 models/*.xlsx
 !models/.gitkeep
 
+# Secrets
+.env
+
 # Python
 __pycache__/
 *.pyc

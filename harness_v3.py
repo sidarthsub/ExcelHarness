@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import signal
 import sys
@@ -36,6 +37,18 @@ ROOT = Path(__file__).parent
 CERTS = ROOT / "officejs-prototype" / "certs"
 AGENTS_DIR = ROOT / "agents"
 
+# Load .env file if it exists
+_env_file = ROOT / ".env"
+AGENT_ENV = {}
+if _env_file.exists():
+    for line in _env_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            AGENT_ENV[key.strip()] = value.strip()
+    if AGENT_ENV:
+        print(f"[harness] Loaded {len(AGENT_ENV)} env var(s) from .env")
+
 
 async def run_agent_session(
     system_prompt: str,
@@ -55,6 +68,7 @@ async def run_agent_session(
         allowed_tools=allowed_tools,
         permission_mode="bypassPermissions",
         cwd=str(cwd),
+        env={**os.environ, **AGENT_ENV} if AGENT_ENV else None,
     )
 
     combined = "\n\n---\n\n".join(user_messages)
