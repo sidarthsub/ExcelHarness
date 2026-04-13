@@ -178,7 +178,19 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
 
     # --- Pass 1: Ambiguities ---
     await server.send_chat("Analyzing your brief for ambiguities...")
+
+    # Tell the Planner exactly where to look — prevents it from wandering into old runs
+    session_context = (
+        f"SESSION DIRECTORY: {session.run_dir}\n"
+        f"INPUT FILES: {session.input_dir}\n"
+        f"INPUT DUMPS (text extracts of xlsx): {session.input_dir / 'dumps'}\n"
+        f"CONVENTIONS: {ROOT / 'conventions.md'}\n"
+        f"SCHEMA: {ROOT / 'schemas' / 'model_spec.schema.json'}\n"
+        f"IMPORTANT: Only read files from the paths listed above. Do NOT read from other runs/ directories.\n"
+    )
+
     pass1_user = (
+        f"{session_context}\n"
         f"BRIEF:\n{brief}\n\n"
         "Run Pass 1 (ambiguity detection). Output a JSON array of questions, "
         "or an empty array if the brief is fully specified. Respond with ONLY the JSON array."
@@ -225,6 +237,7 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
     await server.send_chat("Generating spec...")
     clarif_text = "\n".join(f"- {k}: {v}" for k, v in clarifications.items())
     pass2_user = (
+        f"{session_context}\n"
         f"BRIEF:\n{brief}\n\n"
         f"CLARIFICATIONS:\n{clarif_text or '(none)'}\n\n"
         "Run Pass 2. Write the full spec and save it to "
