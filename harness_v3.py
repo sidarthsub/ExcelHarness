@@ -42,11 +42,13 @@ async def run_agent_session(
     user_messages: list[str],
     allowed_tools: list[str],
     cwd: Path,
+    on_activity: callable | None = None,
 ) -> str:
     """Run a single-turn Claude Agent SDK query and return the text of the final assistant response.
 
-    For multi-turn Planner flows (ambiguity Q&A -> spec), call this multiple times
-    with accumulated user_messages.
+    on_activity: optional async callback(str) called with status updates as the
+    agent works (tool calls, progress). Used to stream updates to chat so the
+    user isn't staring at a blank screen.
     """
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
@@ -54,9 +56,6 @@ async def run_agent_session(
         cwd=str(cwd),
     )
 
-    # For now we concatenate all user turns into one prompt. The SDK's query() API
-    # is single-turn — for real multi-turn we need a ClaudeSDKClient (v2 harness uses
-    # it). We'll upgrade to a session-based client if single-turn proves insufficient.
     combined = "\n\n---\n\n".join(user_messages)
 
     final_text = ""
@@ -65,6 +64,25 @@ async def run_agent_session(
             for block in message.content:
                 if isinstance(block, TextBlock):
                     final_text = block.text
+                elif isinstance(block, ToolUseBlock) and on_activity:
+                    # Stream tool calls as status updates
+                    tool_name = block.name
+                    tool_input = block.input or {}
+                    if tool_name == "Read":
+                        path = tool_input.get("file_path", "")
+                        short = path.split("/")[-1] if "/" in str(path) else path
+                        await on_activity(f"Reading {short}...")
+                    elif tool_name == "Glob":
+                        await on_activity(f"Searching files...")
+                    elif tool_name == "Grep":
+                        await on_activity(f"Searching code...")
+                    elif tool_name == "Write":
+                        path = tool_input.get("file_path", "")
+                        short = path.split("/")[-1] if "/" in str(path) else path
+                        await on_activity(f"Writing {short}...")
+                    elif tool_name == "Bash":
+                        cmd = str(tool_input.get("command", ""))[:60]
+                        await on_activity(f"Running: {cmd}...")
     return final_text
 
 
@@ -92,7 +110,11 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
     prompt = (AGENTS_DIR / "planner_v3.md").read_text()
     schema = json.loads((ROOT / "schemas" / "model_spec.schema.json").read_text())
 
+    async def status(msg: str):
+        await server.send_chat(msg)
+
     # --- Pass 1: Ambiguities ---
+    await server.send_chat("Analyzing your brief for ambiguities...")
     pass1_user = (
         f"BRIEF:\n{brief}\n\n"
         "Run Pass 1 (ambiguity detection). Output a JSON array of questions, "
@@ -104,6 +126,7 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
         user_messages=[pass1_user],
         allowed_tools=["Read", "Glob", "Grep"],
         cwd=ROOT,
+        on_activity=status,
     )
 
     try:
@@ -136,6 +159,7 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
         session.append_chat("user", answer)
 
     # --- Pass 2: Full spec ---
+    await server.send_chat("Generating spec...")
     clarif_text = "\n".join(f"- {k}: {v}" for k, v in clarifications.items())
     pass2_user = (
         f"BRIEF:\n{brief}\n\n"
@@ -150,6 +174,7 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
         user_messages=[pass2_user],
         allowed_tools=["Read", "Glob", "Grep", f"Write({session.run_dir}/model_spec.json)"],
         cwd=ROOT,
+        on_activity=status,
     )
 
     # --- Load, validate, optionally retry on schema failure ---
@@ -180,6 +205,7 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
             raise
 
     # --- Pass 3: Self-review ---
+    await server.send_chat("Reviewing spec for contradictions...")
     pass3_user = (
         "Run Pass 3 (self-review). Re-read the spec you just wrote at "
         f"{spec_path} and check for contradictions, overprescription, incompleteness, "
@@ -190,6 +216,7 @@ async def run_planner(session: Session, server: BridgeServer, brief: str) -> dic
         user_messages=[pass3_user],
         allowed_tools=["Read", "Glob", "Grep", f"Write({session.run_dir}/model_spec.json)", f"Edit({session.run_dir}/model_spec.json)"],
         cwd=ROOT,
+        on_activity=status,
     )
     # Reload and revalidate in case pass 3 rewrote.
     spec = json.loads(spec_path.read_text())
@@ -384,6 +411,9 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
 
         watcher_task = asyncio.create_task(watch_checkpoints())
 
+        async def builder_status(msg: str):
+            await server.send_chat(msg)
+
         try:
             final_text = await run_agent_session(
                 system_prompt=prompt,
@@ -395,6 +425,7 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
                     "Bash(ls*)", "Bash(cat*)",
                 ],
                 cwd=ROOT,
+                on_activity=builder_status,
             )
         finally:
             stop_watcher.set()
