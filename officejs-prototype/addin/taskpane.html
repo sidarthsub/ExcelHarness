@@ -423,13 +423,54 @@
             },
 
             async saveSnapshot({ path }) {
-                // Workbook.getFileInBase64() returns the workbook contents as base64 so
-                // the harness can write it wherever it wants. The `path` param is accepted
-                // but unused — the harness controls where the bytes land.
-                return Excel.run(async (ctx) => {
-                    const file = ctx.workbook.getFileInBase64();
-                    await ctx.sync();
-                    return { ok: true, base64: file.value };
+                // Use the Common API (Office.context.document.getFileAsync) to get
+                // the workbook as a base64-encoded xlsx. getFileInBase64() doesn't
+                // exist on Mac Excel.
+                return new Promise((resolve) => {
+                    Office.context.document.getFileAsync(
+                        Office.FileType.Compressed,
+                        { sliceSize: 4194304 },
+                        (result) => {
+                            if (result.status !== Office.AsyncResultStatus.Succeeded) {
+                                resolve({ error: result.error.message || "getFileAsync failed" });
+                                return;
+                            }
+                            const file = result.value;
+                            const sliceCount = file.sliceCount;
+                            const slices = [];
+                            let received = 0;
+
+                            function getSlice(index) {
+                                file.getSliceAsync(index, (sliceResult) => {
+                                    if (sliceResult.status !== Office.AsyncResultStatus.Succeeded) {
+                                        file.closeAsync();
+                                        resolve({ error: sliceResult.error.message || "getSliceAsync failed" });
+                                        return;
+                                    }
+                                    slices[index] = sliceResult.value.data;
+                                    received++;
+                                    if (received === sliceCount) {
+                                        file.closeAsync();
+                                        const totalLength = slices.reduce((sum, s) => sum + s.byteLength, 0);
+                                        const combined = new Uint8Array(totalLength);
+                                        let offset = 0;
+                                        for (const slice of slices) {
+                                            combined.set(new Uint8Array(slice), offset);
+                                            offset += slice.byteLength;
+                                        }
+                                        let binary = "";
+                                        for (let i = 0; i < combined.length; i++) {
+                                            binary += String.fromCharCode(combined[i]);
+                                        }
+                                        resolve({ ok: true, base64: btoa(binary) });
+                                    } else {
+                                        getSlice(index + 1);
+                                    }
+                                });
+                            }
+                            getSlice(0);
+                        }
+                    );
                 });
             },
 
