@@ -65,24 +65,18 @@ async def run_agent_session(
                 if isinstance(block, TextBlock):
                     final_text = block.text
                 elif isinstance(block, ToolUseBlock) and on_activity:
-                    # Stream tool calls as status updates
+                    # Only surface meaningful tool calls — skip noisy reads/greps
                     tool_name = block.name
                     tool_input = block.input or {}
-                    if tool_name == "Read":
-                        path = tool_input.get("file_path", "")
-                        short = path.split("/")[-1] if "/" in str(path) else path
-                        await on_activity(f"Reading {short}...")
-                    elif tool_name == "Glob":
-                        await on_activity(f"Searching files...")
-                    elif tool_name == "Grep":
-                        await on_activity(f"Searching code...")
-                    elif tool_name == "Write":
+                    if tool_name == "Write":
                         path = tool_input.get("file_path", "")
                         short = path.split("/")[-1] if "/" in str(path) else path
                         await on_activity(f"Writing {short}...")
                     elif tool_name == "Bash":
-                        cmd = str(tool_input.get("command", ""))[:60]
-                        await on_activity(f"Running: {cmd}...")
+                        cmd = str(tool_input.get("command", ""))
+                        # Only show python script executions, not trivial commands
+                        if "python3 /tmp/builder" in cmd:
+                            await on_activity(f"Running build script...")
     return final_text
 
 
