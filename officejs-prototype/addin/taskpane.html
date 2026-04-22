@@ -5,35 +5,100 @@
     <title>Excel Harness Bridge v2</title>
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <style>
-        body { font-family: -apple-system, sans-serif; padding: 16px; background: #1a1a1a; color: #ccc; font-size: 13px; }
-        #status { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
-        #log { font-family: 'SF Mono', monospace; font-size: 11px; white-space: pre-wrap; max-height: 400px; overflow-y: auto; background: #111; padding: 8px; border-radius: 4px; }
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, 'SF Pro Text', sans-serif; padding: 0; margin: 0; background: #0d0d0d; color: #e0e0e0; font-size: 13px; }
+
+        /* Header */
+        #header { padding: 16px 16px 0; }
+        #status { font-size: 14px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+        #status .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        #status .dot.green { background: #4ae04a; box-shadow: 0 0 6px #4ae04a88; }
+        #status .dot.yellow { background: #e0a050; box-shadow: 0 0 6px #e0a05088; animation: pulse 1.5s infinite; }
+        #status .dot.red { background: #e04a4a; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        /* Progress bar */
+        #progressBar { height: 3px; background: #1a1a1a; margin: 8px 0 0; border-radius: 2px; overflow: hidden; }
+        #progressFill { height: 100%; width: 0%; background: linear-gradient(90deg, #2F5496, #4ae04a); transition: width 0.5s ease; border-radius: 2px; }
+        #progressFill.indeterminate { width: 30%; animation: shimmer 1.5s infinite; }
+        @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
+
+        /* Phase indicator */
+        #phases { display: flex; gap: 2px; padding: 12px 16px 8px; font-size: 11px; }
+        .phase { padding: 4px 10px; border-radius: 12px; background: #1a1a1a; color: #555; font-weight: 500; }
+        .phase.active { background: #1f3864; color: #7ba3d4; }
+        .phase.done { background: #1a2e1a; color: #4ae04a; }
+
         .ok { color: #4ae04a; }
         .err { color: #e04a4a; }
         .cmd { color: #7ba3d4; }
-        button { background: #2F5496; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; margin-bottom: 12px; }
+
+        button { background: #2F5496; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; }
         button:hover { background: #3a65b0; }
-        button:disabled { background: #555; cursor: not-allowed; }
-        #chatLog { background: #0f0f0f; padding: 10px; border-radius: 4px; min-height: 200px; max-height: 400px; overflow-y: auto; margin: 10px 0; font-family: -apple-system, sans-serif; }
-        .chat-msg { padding: 6px 10px; margin: 4px 0; border-radius: 6px; max-width: 90%; }
-        .chat-user { background: #1f3864; color: #fff; margin-left: auto; text-align: right; }
-        .chat-agent { background: #2a2a2a; color: #ccc; }
-        .chat-system { background: #3a2a1a; color: #e0a050; font-style: italic; }
-        #chatInputRow { display: flex; gap: 8px; }
-        #chatInput { flex: 1; background: #1a1a1a; color: #ccc; border: 1px solid #333; padding: 8px; border-radius: 4px; }
-        #chatInput:disabled { opacity: 0.5; }
-        #chatSend { background: #2F5496; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
-        #chatSend:disabled { background: #555; cursor: not-allowed; }
-        details#debugLog summary { cursor: pointer; color: #888; margin-top: 12px; }
+        button:disabled { background: #252525; color: #555; cursor: not-allowed; }
+
+        /* Chat */
+        #chatLog { padding: 8px 16px; min-height: 300px; max-height: 500px; overflow-y: auto; }
+        .chat-msg { padding: 8px 12px; margin: 6px 0; border-radius: 8px; max-width: 95%; line-height: 1.5; }
+        .chat-msg p { margin: 4px 0; }
+        .chat-msg strong { color: #fff; }
+        .chat-msg em { color: #999; font-size: 12px; }
+        .chat-user { background: #1f3864; color: #ddd; margin-left: auto; text-align: right; border-bottom-right-radius: 2px; }
+        .chat-agent { background: #1a1a1a; color: #ccc; border: 1px solid #252525; border-bottom-left-radius: 2px; }
+        .chat-system { background: #1a1a10; color: #b0a060; font-size: 12px; padding: 4px 12px; }
+
+        /* Pills for choices */
+        .chat-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .chat-pill { padding: 6px 14px; border-radius: 16px; background: #252525; color: #aaa; border: 1px solid #333; cursor: pointer; font-size: 12px; transition: all 0.15s; }
+        .chat-pill:hover { background: #2F5496; color: #fff; border-color: #2F5496; }
+        .chat-pill.selected { background: #2F5496; color: #fff; border-color: #4a7acc; }
+
+        /* Input */
+        #chatInputRow { display: flex; gap: 8px; padding: 8px 16px 16px; border-top: 1px solid #1a1a1a; }
+        #chatInput { flex: 1; background: #111; color: #ddd; border: 1px solid #252525; padding: 10px 12px; border-radius: 8px; font-size: 13px; outline: none; }
+        #chatInput:focus { border-color: #2F5496; }
+        #chatInput:disabled { opacity: 0.3; }
+        #chatSend { background: #2F5496; color: #fff; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 500; }
+        #chatSend:disabled { background: #252525; color: #555; cursor: not-allowed; }
+
+        /* Debug */
+        details#debugLog { padding: 0 16px; }
+        details#debugLog summary { cursor: pointer; color: #555; margin-top: 8px; font-size: 11px; }
+        #log { font-family: 'SF Mono', 'Menlo', monospace; font-size: 10px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; background: #0a0a0a; padding: 8px; border-radius: 4px; color: #666; }
+
+        #runTestRow { padding: 0 16px 4px; }
+
+        /* Sheet mapper */
+        .sheet-mapper { background: #111; border: 1px solid #252525; border-radius: 8px; padding: 12px; margin: 8px 0; }
+        .sheet-mapper h3 { margin: 0 0 10px; font-size: 13px; color: #ddd; }
+        .sheet-map-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+        .sheet-map-row .spec-name { flex: 0 0 140px; font-size: 12px; color: #aaa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .sheet-map-row .arrow { color: #555; font-size: 11px; }
+        .sheet-map-row select { flex: 1; background: #1a1a1a; color: #ccc; border: 1px solid #333; padding: 6px 8px; border-radius: 6px; font-size: 12px; }
+        .sheet-map-row select:focus { border-color: #2F5496; outline: none; }
+        .sheet-map-submit { background: #2F5496; color: #fff; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; margin-top: 8px; width: 100%; }
+        .sheet-map-submit:hover { background: #3a65b0; }
+        .sheet-map-note { font-size: 11px; color: #666; margin-top: 6px; }
     </style>
 </head>
 <body>
-    <div id="status">Initializing...</div>
-    <button id="runTest" onclick="runTest()" disabled>Run Test</button>
+    <div id="header">
+        <div id="status"><span class="dot red"></span><span id="statusText"> Initializing...</span></div>
+        <div id="progressBar"><div id="progressFill"></div></div>
+    </div>
+    <div id="phases">
+        <span class="phase" data-phase="connect">Connect</span>
+        <span class="phase" data-phase="plan">Plan</span>
+        <span class="phase" data-phase="build">Build</span>
+        <span class="phase" data-phase="eval">Evaluate</span>
+    </div>
     <div id="chatLog"></div>
     <div id="chatInputRow">
         <input type="text" id="chatInput" placeholder="Type a message..." disabled />
         <button id="chatSend" onclick="sendChat()" disabled>Send</button>
+    </div>
+    <div id="runTestRow">
+        <button id="runTest" onclick="runTest()" disabled style="font-size:11px; padding:4px 10px;">Run Test</button>
     </div>
     <details id="debugLog">
         <summary>Debug log</summary>
@@ -54,16 +119,185 @@
         }
 
         function setStatus(text, cls) {
-            statusEl.textContent = text;
-            statusEl.className = cls || "";
+            const dot = statusEl.querySelector(".dot");
+            const dotClass = cls === "ok" ? "green" : cls === "err" ? "red" : "yellow";
+            dot.className = `dot ${dotClass}`;
+            document.getElementById("statusText").textContent = " " + text;
+        }
+
+        function setPhase(phase) {
+            document.querySelectorAll(".phase").forEach(el => {
+                const p = el.dataset.phase;
+                if (p === phase) {
+                    el.className = "phase active";
+                } else if (["connect","plan","build","eval"].indexOf(p) < ["connect","plan","build","eval"].indexOf(phase)) {
+                    el.className = "phase done";
+                } else {
+                    el.className = "phase";
+                }
+            });
+        }
+
+        function setProgress(pct) {
+            const fill = document.getElementById("progressFill");
+            fill.classList.remove("indeterminate");
+            fill.style.width = pct + "%";
+        }
+
+        function setProgressIndeterminate() {
+            const fill = document.getElementById("progressFill");
+            fill.classList.add("indeterminate");
+        }
+
+        function renderMarkdown(text) {
+            // Simple markdown: **bold**, _italic_, \n → <br>, Options: → pills
+            let html = text
+                .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+                .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+                .replace(/_(.*?)_/g, "<em>$1</em>")
+                .replace(/\n/g, "<br>");
+            return html;
         }
 
         function addChatMessage(text, role) {
             const log = document.getElementById("chatLog");
             const msg = document.createElement("div");
             msg.className = `chat-msg chat-${role}`;
-            msg.textContent = text;
+
+            if (role === "agent") {
+                // Check for options pattern: "Options:\n  1. Foo\n  2. Bar"
+                const optMatch = text.match(/Options:\n((?:\s+\d+\.\s+.+\n?)+)/);
+                const beforeOptions = optMatch ? text.substring(0, optMatch.index) : text;
+                msg.innerHTML = renderMarkdown(beforeOptions);
+
+                if (optMatch) {
+                    const pills = document.createElement("div");
+                    pills.className = "chat-pills";
+                    const options = optMatch[1].trim().split("\n").map(s => s.trim());
+                    options.forEach(opt => {
+                        const m = opt.match(/^(\d+)\.\s+(.+)/);
+                        if (m) {
+                            const pill = document.createElement("span");
+                            pill.className = "chat-pill";
+                            pill.textContent = m[2];
+                            pill.dataset.value = m[1];
+                            pill.onclick = () => {
+                                // Select this pill
+                                pills.querySelectorAll(".chat-pill").forEach(p => p.classList.remove("selected"));
+                                pill.classList.add("selected");
+                                // Put value in input
+                                document.getElementById("chatInput").value = m[1];
+                                document.getElementById("chatInput").focus();
+                            };
+                            pills.appendChild(pill);
+                        }
+                    });
+                    // Add "Custom answer" pill
+                    const customPill = document.createElement("span");
+                    customPill.className = "chat-pill";
+                    customPill.textContent = "Custom...";
+                    customPill.onclick = () => {
+                        pills.querySelectorAll(".chat-pill").forEach(p => p.classList.remove("selected"));
+                        customPill.classList.add("selected");
+                        document.getElementById("chatInput").value = "";
+                        document.getElementById("chatInput").focus();
+                    };
+                    pills.appendChild(customPill);
+                    msg.appendChild(pills);
+                }
+            } else {
+                msg.textContent = text;
+            }
+
+            // Auto-detect phase from agent messages
+            if (role === "agent") {
+                const lower = text.toLowerCase();
+                if (lower.includes("ambiguit") || lower.includes("analyzing") || lower.includes("generating spec") || lower.includes("reviewing spec")) {
+                    setPhase("plan");
+                    setProgressIndeterminate();
+                } else if (lower.includes("starting build") || lower.includes("writing builder") || lower.includes("running build")) {
+                    setPhase("build");
+                    setProgressIndeterminate();
+                } else if (lower.includes("checkpoint") || lower.includes("evaluator")) {
+                    setPhase("eval");
+                    setProgressIndeterminate();
+                } else if (lower.includes("complete") || lower.includes("unprotected")) {
+                    setProgress(100);
+                }
+            }
+
             log.appendChild(msg);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function renderSheetMapper(files, msgId) {
+            // files: [{name: "VulnCheck...", sheets: ["Series Seed", "Series A (1011 Leads)", ...]}, ...]
+            const log = document.getElementById("chatLog");
+            const container = document.createElement("div");
+            container.className = "sheet-mapper";
+            container.innerHTML = `<h3>Select which sheets to include</h3>
+                <p class="sheet-map-note">Check the sheets you need. Data source files are pre-selected. For large reference files, pick only the relevant templates.</p>`;
+
+            const checkboxes = [];
+            for (const file of files) {
+                const fileHeader = document.createElement("div");
+                fileHeader.style.cssText = "color:#7ba3d4; font-size:12px; font-weight:600; margin:10px 0 4px; display:flex; align-items:center; gap:8px;";
+                fileHeader.textContent = file.name;
+
+                // Select all / none toggle
+                const toggle = document.createElement("span");
+                toggle.style.cssText = "color:#555; font-size:10px; cursor:pointer; text-decoration:underline;";
+                toggle.textContent = file.sheets.length <= 5 ? "" : "toggle all";
+                fileHeader.appendChild(toggle);
+                container.appendChild(fileHeader);
+
+                const isSmall = file.sheets.length <= 5;
+                for (const sheet of file.sheets) {
+                    const row = document.createElement("label");
+                    row.style.cssText = "display:flex; align-items:center; gap:8px; padding:3px 0; font-size:12px; color:#aaa; cursor:pointer;";
+                    const cb = document.createElement("input");
+                    cb.type = "checkbox";
+                    cb.checked = isSmall; // auto-select small files (data sources)
+                    cb.dataset.file = file.name;
+                    cb.dataset.sheet = sheet;
+                    cb.style.cssText = "accent-color: #2F5496;";
+                    checkboxes.push(cb);
+                    row.appendChild(cb);
+                    row.appendChild(document.createTextNode(sheet));
+                    container.appendChild(row);
+                }
+
+                toggle.onclick = () => {
+                    const fileCbs = checkboxes.filter(c => c.dataset.file === file.name);
+                    const allChecked = fileCbs.every(c => c.checked);
+                    fileCbs.forEach(c => c.checked = !allChecked);
+                };
+            }
+
+            const submit = document.createElement("button");
+            submit.className = "sheet-map-submit";
+            submit.textContent = "Continue with selected sheets";
+            submit.onclick = () => {
+                const selected = {};
+                for (const cb of checkboxes) {
+                    if (cb.checked) {
+                        if (!selected[cb.dataset.file]) selected[cb.dataset.file] = [];
+                        selected[cb.dataset.file].push(cb.dataset.sheet);
+                    }
+                }
+                // Send back to harness
+                ws.send(JSON.stringify({ type: "sheetMapResponse", id: msgId, selected }));
+                submit.disabled = true;
+                submit.textContent = "Selected!";
+                // Dim the checkboxes
+                checkboxes.forEach(c => c.disabled = true);
+                // Show summary
+                const total = Object.values(selected).reduce((a, b) => a + b.length, 0);
+                addChatMessage(`Selected ${total} sheets from ${Object.keys(selected).length} file(s)`, "user");
+            };
+            container.appendChild(submit);
+
+            log.appendChild(container);
             log.scrollTop = log.scrollHeight;
         }
 
@@ -74,6 +308,8 @@
             ws.send(JSON.stringify({ type: "chat", text: text }));
             addChatMessage(text, "user");
             input.value = "";
+            // Deselect any pills
+            document.querySelectorAll(".chat-pill.selected").forEach(p => p.classList.remove("selected"));
         }
 
         // Handle Enter key
@@ -208,6 +444,15 @@
                         // Otherwise treat as character units and convert.
                         range.format.columnWidth = width > 50 ? width : width * CHAR_TO_PTS;
                     }
+                    await ctx.sync();
+                    return { ok: true };
+                });
+            },
+
+            async setShowGridLines({ sheet, show }) {
+                return Excel.run(async (ctx) => {
+                    const ws = ctx.workbook.worksheets.getItem(sheet);
+                    ws.showGridlines = show;
                     await ctx.sync();
                     return { ok: true };
                 });
@@ -451,6 +696,19 @@
                 // Use the Common API (Office.context.document.getFileAsync) to get
                 // the workbook as a base64-encoded xlsx. getFileInBase64() doesn't
                 // exist on Mac Excel.
+                // First force a full recalculation so cached values in the saved
+                // xlsx reflect current formulas — the downstream dump reads cached
+                // values via openpyxl and cannot recompute.
+                try {
+                    await Excel.run(async (ctx) => {
+                        ctx.workbook.application.calculationMode = "Automatic";
+                        ctx.workbook.application.calculate("Full");
+                        await ctx.sync();
+                    });
+                    log("saveSnapshot: full recalc done", "cmd");
+                } catch (e) {
+                    log(`saveSnapshot: recalc failed (non-fatal) - ${e.message}`, "err");
+                }
                 log("saveSnapshot: starting getFileAsync...", "cmd");
                 return new Promise((resolve) => {
                     try {
@@ -536,11 +794,13 @@
         // --- WebSocket connection ---
 
         function connect() {
-            setStatus("Connecting...", "cmd");
+            setStatus("Connecting...", "yellow");
             ws = new WebSocket("wss://localhost:3001");
 
             ws.onopen = () => {
                 setStatus("Connected", "ok");
+                setPhase("connect");
+                setProgress(5);
                 log("Connected to relay server", "ok");
                 document.getElementById("runTest").disabled = false;
                 document.getElementById("chatInput").disabled = false;
@@ -554,6 +814,12 @@
                 // Chat messages from the harness
                 if (msg.type === "chat") {
                     addChatMessage(msg.text, "agent");
+                    return;
+                }
+
+                // Sheet mapper UI
+                if (msg.type === "sheetMapper") {
+                    renderSheetMapper(msg.files, msg.id);
                     return;
                 }
 
@@ -581,6 +847,7 @@
 
             ws.onclose = () => {
                 setStatus("Disconnected — reconnecting...", "err");
+                setProgress(0);
                 log("Disconnected, retrying in 3s...", "err");
                 document.getElementById("chatInput").disabled = true;
                 document.getElementById("chatSend").disabled = true;

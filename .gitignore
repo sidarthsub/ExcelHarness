@@ -1,4 +1,5 @@
-# v3 per-session artifacts
+# v3 per-session artifacts — entire runs tree (dumps, snapshots, scripts, verdicts, model outputs)
+runs/
 models/*.xlsx
 !models/.gitkeep
 

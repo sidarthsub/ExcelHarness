@@ -17,7 +17,7 @@ from openpyxl.styles.colors import COLOR_INDEX
 from openpyxl.utils.cell import range_boundaries
 from openpyxl.worksheet.formula import DataTableFormula
 from pdf2image import convert_from_path
-from PIL import Image
+from PIL import Image, ImageChops
 
 ROOT = Path(__file__).parent
 EVALS = ROOT / "evals"
@@ -276,53 +276,44 @@ def _tarjan_scc(graph: dict[str, set[str]]) -> list[list[str]]:
 
 
 def render_screenshots(xlsx_path: Path, sheet_names: list[str], out_dir: Path, source_tag: str = "") -> None:
-    """Export per-sheet PNGs via LibreOffice PDF export + pdf2image."""
+    """Render per-sheet compressed JPEGs — only for the specified sheets."""
+    from snapshot_renderer import render_xlsx_to_pngs
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        subprocess.run(
-            ["soffice", "--headless", "--convert-to", "pdf",
-             "--outdir", str(tmpdir), str(xlsx_path)],
-            check=True, capture_output=True,
-        )
-        # Find the generated PDF
-        pdfs = list(tmpdir.glob("*.pdf"))
-        if not pdfs:
-            print("  Warning: PDF export failed, skipping screenshots", file=sys.stderr)
-            return
-        images = convert_from_path(str(pdfs[0]), dpi=150)
+    # If we're filtering sheets, create a temp xlsx with only those sheets
+    # so LibreOffice doesn't render all 33 pages
+    all_sheets = openpyxl.load_workbook(xlsx_path, read_only=True).sheetnames
+    if set(sheet_names) == set(all_sheets):
+        render_path = xlsx_path
+    else:
+        import shutil
+        tmp_xlsx = out_dir / f"_tmp_{xlsx_path.name}"
+        shutil.copy2(xlsx_path, tmp_xlsx)
+        wb = openpyxl.load_workbook(tmp_xlsx)
+        for ws_name in wb.sheetnames:
+            if ws_name not in sheet_names:
+                del wb[ws_name]
+        wb.save(tmp_xlsx)
+        wb.close()
+        render_path = tmp_xlsx
 
-        if len(images) == len(sheet_names):
-            for name, img in zip(sheet_names, images):
-                img.save(str(out_dir / f"{source_tag}{name}.png"))
-        elif len(images) > len(sheet_names):
-            # Wide sheets span multiple pages — stitch vertically per sheet
-            pages_per_sheet = len(images) // len(sheet_names)
-            remainder = len(images) % len(sheet_names)
-            idx = 0
-            for i, name in enumerate(sheet_names):
-                count = pages_per_sheet + (1 if i < remainder else 0)
-                sheet_imgs = images[idx:idx + count]
-                idx += count
-                if len(sheet_imgs) == 1:
-                    sheet_imgs[0].save(str(out_dir / f"{name}.png"))
-                else:
-                    total_h = sum(im.height for im in sheet_imgs)
-                    max_w = max(im.width for im in sheet_imgs)
-                    stitched = Image.new("RGB", (max_w, total_h), (255, 255, 255))
-                    y = 0
-                    for im in sheet_imgs:
-                        stitched.paste(im, (0, y))
-                        y += im.height
-                    stitched.save(str(out_dir / f"{name}.png"))
-        else:
-            for i, img in enumerate(images):
-                name = sheet_names[i] if i < len(sheet_names) else f"page_{i}"
-                img.save(str(out_dir / f"{source_tag}{name}.png"))
+    outputs = render_xlsx_to_pngs(render_path, out_dir)
+
+    # Map pages to sheet names
+    if len(outputs) == len(sheet_names):
+        for out_path, name in zip(outputs, sheet_names):
+            dest = out_dir / f"{source_tag}{name}.jpg"
+            if out_path.exists():
+                out_path.rename(dest)
+    # Clean up temp files
+    for f in out_dir.glob("_tmp_*"):
+        f.unlink()
+    for f in out_dir.glob("*.pdf"):
+        f.unlink()
 
 
-def dump(xlsx_path: Path) -> None:
+def dump(xlsx_path: Path, sheets: list[str] | None = None) -> None:
+    """Dump workbook to text. If sheets is provided, only dump those sheet names."""
     xlsx_path = Path(xlsx_path).resolve()
     if not xlsx_path.exists():
         sys.exit(f"File not found: {xlsx_path}")
@@ -337,16 +328,21 @@ def dump(xlsx_path: Path) -> None:
     # 1. Formulas: compact text dump plus structured JSON for machine evaluation
     formulas_dir = EVALS / "formulas"
     formulas_dir.mkdir(parents=True, exist_ok=True)
-    formulas_json_dir = EVALS / "formulas_json"
-    formulas_json_dir.mkdir(parents=True, exist_ok=True)
+    # formulas_json_dir disabled — structured JSON was only used by old openpyxl evaluator
+    formulas_json_dir = None
     wb = openpyxl.load_workbook(xlsx_path)
     wb_values = openpyxl.load_workbook(xlsx_path, data_only=True)
     theme_palette = _parse_theme_palette(wb)
     sheet_names = [ws.title for ws in wb.worksheets]
+    if sheets:
+        sheet_set = set(sheets)
+        active_sheets = [ws for ws in wb.worksheets if ws.title in sheet_set]
+    else:
+        active_sheets = list(wb.worksheets)
     all_formula_nodes = set()
     structured_by_sheet = {}
     global_function_counts = defaultdict(int)
-    for ws in wb.worksheets:
+    for ws in active_sheets:
         values_ws = wb_values[ws.title]
         max_col = ws.max_column or 1
         actual_max_row = 1
@@ -403,9 +399,23 @@ def dump(xlsx_path: Path) -> None:
                 label_strs = [f"{cl}={v}" for cl, v in sorted(labels.items())]
                 parts.append(" | ".join(label_strs))
 
+            # Group identical unique formulas across consecutive columns
             if unique_formulas:
-                for cl, f in sorted(unique_formulas.items()):
-                    parts.append(f"{cl}={f}")
+                groups = []
+                sorted_unique = sorted(unique_formulas.items())
+                i = 0
+                while i < len(sorted_unique):
+                    cl, f = sorted_unique[i]
+                    run = [cl]
+                    while i + 1 < len(sorted_unique) and sorted_unique[i + 1][1] == f:
+                        i += 1
+                        run.append(sorted_unique[i][0])
+                    i += 1
+                    if len(run) > 2:
+                        parts.append(f"[{run[0]}-{run[-1]}]={f}")
+                    else:
+                        for c in run:
+                            parts.append(f"{c}={f}")
 
             for tmpl, cols in sorted(templates.items(), key=lambda x: x[1][0]):
                 cols_sorted = sorted(cols)
@@ -514,24 +524,26 @@ def dump(xlsx_path: Path) -> None:
             "formula_cells": entries,
             "literal_cells": literals,
         }
-        (formulas_json_dir / f"{source_tag}{sheet_name}.json").write_text(
-            json.dumps(payload, indent=2, default=str)
-        )
+        if formulas_json_dir:
+            (formulas_json_dir / f"{source_tag}{sheet_name}.json").write_text(
+                json.dumps(payload, indent=2, default=str)
+            )
 
-    workbook_formula_summary = {
-        "workbook": xlsx_path.name,
-        "sheet_names": sheet_names,
-        "functions_used": dict(sorted(global_function_counts.items())),
-        "iterative_components": iterative_components,
-    }
-    (formulas_json_dir / f"{source_tag}workbook.json").write_text(
-        json.dumps(workbook_formula_summary, indent=2, default=str)
-    )
+    if formulas_json_dir:
+        workbook_formula_summary = {
+            "workbook": xlsx_path.name,
+            "sheet_names": sheet_names,
+            "functions_used": dict(sorted(global_function_counts.items())),
+            "iterative_components": iterative_components,
+        }
+        (formulas_json_dir / f"{source_tag}workbook.json").write_text(
+            json.dumps(workbook_formula_summary, indent=2, default=str)
+        )
 
     # 2. Styles: formatting metadata per sheet
     styles_dir = EVALS / "styles"
     styles_dir.mkdir(parents=True, exist_ok=True)
-    for ws in wb.worksheets:
+    for ws in active_sheets:
         lines = []
         max_col = min(ws.max_column or 1, 30)
         # Find actual last row with data or formatting
@@ -544,13 +556,31 @@ def dump(xlsx_path: Path) -> None:
                 actual_max = row[0].row
         max_row = min(actual_max or 1, 100)
 
-        # Column widths
+        # Sheet view settings
+        show_gridlines = True
+        if ws.views and ws.views.sheetView:
+            for v in ws.views.sheetView:
+                if v.showGridLines is not None:
+                    show_gridlines = v.showGridLines
+        lines.append(f"## Sheet View")
+        lines.append(f"  showGridLines: {show_gridlines}")
+        lines.append("")
+
+        # Column widths — rounded. Emit actual width for every column,
+        # including sub-1 "spacer" columns (annotated so builders know why
+        # they're so narrow — copy the exact number).
         lines.append("## Column Widths")
         for c in range(1, max_col + 1):
             letter = col_letter(c)
             dim = ws.column_dimensions.get(letter)
-            w = dim.width if dim and dim.width else "default"
-            lines.append(f"  {letter}: {w}")
+            if dim and dim.width:
+                w = dim.width
+                if w < 1.0:
+                    lines.append(f"  {letter}: {round(w, 2)}  # spacer — use this exact sub-1 width, do NOT round up")
+                else:
+                    lines.append(f"  {letter}: {round(w, 1)}")
+            else:
+                lines.append(f"  {letter}: default")
 
         # Row heights (non-default only)
         non_default_rows = []
@@ -707,10 +737,47 @@ def dump(xlsx_path: Path) -> None:
                     border_grid[(cell.row, cell.column)] = borders
 
         # Pass 2: build style table (deduplicate)
+        # Simplify color tokens: strip wrapper, keep just hex
+        import re as _re
+        def _simplify_token(t: str) -> str:
+            # color:indexed(0,#000000) → color:#000000
+            t = _re.sub(r'color:indexed\(\d+,#([0-9A-Fa-f]{6})\)', r'color:#\1', t)
+            t = _re.sub(r'color:indexed\(\d+\)', 'color:#000000', t)
+            t = _re.sub(r'color:rgb\(#([0-9A-Fa-f]{6})\)', r'color:#\1', t)
+            t = _re.sub(r'color:theme\(\d+,#([0-9A-Fa-f]{6})\)', r'color:#\1', t)
+            t = _re.sub(r'color:theme\(\d+,tint=[^,]+,#([0-9A-Fa-f]{6})\)', r'color:#\1', t)
+            t = _re.sub(r'fill:rgb\(#([0-9A-Fa-f]{6})\)', r'fill:#\1', t)
+            t = _re.sub(r'fill:theme\(\d+,#([0-9A-Fa-f]{6})\)', r'fill:#\1', t)
+            return t
+
         unique_styles = sorted(set(style_grid.values()))
+
+        # Detect base font (most common font+size combo) and factor it out
+        from collections import Counter as _Counter
+        font_tokens = _Counter()
+        for style in unique_styles:
+            font_parts = tuple(t for t in style if t.startswith("font:") or t.startswith("size:"))
+            if font_parts:
+                font_tokens[font_parts] += 1
+        base_font = font_tokens.most_common(1)[0][0] if font_tokens else ()
+        base_font_set = set(base_font)
+
+        # Simplify and deduplicate tokens, stripping base font from each style
+        simplified_styles = []
+        for style in unique_styles:
+            simplified = tuple(_simplify_token(t) for t in style if t not in base_font_set)
+            simplified_styles.append(simplified)
+
         style_ids = {s: f"S{i+1}" for i, s in enumerate(unique_styles)}
-        style_tokens = sorted({token for style in unique_styles for token in style})
-        token_ids = {token: f"T{i+1}" for i, token in enumerate(style_tokens)}
+        simplified_style_ids = dict(zip(unique_styles, simplified_styles))
+
+        # Collect tokens from simplified styles
+        all_tokens = sorted({t for s in simplified_styles for t in s})
+        token_ids = {t: f"T{i+1}" for i, t in enumerate(all_tokens)}
+
+        if base_font:
+            lines.append(f"\n## Base Font (applied to all cells, not repeated in styles)")
+            lines.append(f"  {' | '.join(base_font)}")
 
         if token_ids:
             lines.append("\n## Style Tokens")
@@ -719,18 +786,14 @@ def dump(xlsx_path: Path) -> None:
 
         lines.append("\n## Style Table")
         for style, sid in sorted(style_ids.items(), key=lambda x: x[1]):
-            tokens = " ".join(token_ids[token] for token in style)
-            lines.append(f"  {sid}: {tokens}")
+            simplified = simplified_style_ids[style]
+            if simplified:
+                tokens = " ".join(token_ids[t] for t in simplified)
+                lines.append(f"  {sid}: {tokens}")
+            else:
+                lines.append(f"  {sid}: (base only)")
 
-        if alignment_grid:
-            lines.append("\n## Alignment Map")
-            for _, _, line in _merge_rectangles(alignment_grid):
-                lines.append(line)
-
-        if font_grid:
-            lines.append("\n## Font Map")
-            for _, _, line in _merge_rectangles(font_grid):
-                lines.append(line)
+        # Font Map and Alignment Map dropped — redundant with Cell Styles
 
         # Pass 3: map cells to style IDs and merge into 2D rectangles
         id_grid = {pos: style_ids[s] for pos, s in style_grid.items()}
@@ -781,117 +844,59 @@ def dump(xlsx_path: Path) -> None:
 
         edge_spans.sort(key=lambda item: (item[3], item[4], item[0], item[1], item[2], item[5], item[6]))
 
-        border_colors = sorted({color for _, _, color, *_ in edge_spans if color != "-"})
-        color_ids = {color: f"BC{i + 1}" for i, color in enumerate(border_colors)}
+        # Weight mapping for Office.js
+        weight_map = {"hair": "Hairline", "thin": "Thin", "medium": "Medium", "thick": "Thick"}
 
-        spec_keys = sorted({(side, style, color) for side, style, color, *_ in edge_spans})
-        spec_ids = {spec: f"BS{i + 1}" for i, spec in enumerate(spec_keys)}
+        def _color_to_hex(color_token: str) -> str:
+            """Convert color token to hex color for bridge commands."""
+            if color_token == "-" or color_token == "auto":
+                return "#000000"
+            if color_token.startswith("rgb(#"):
+                return color_token[4:-1]  # extract #XXXXXX
+            if color_token.startswith("indexed("):
+                # Extract hex if present, otherwise default to black
+                if ",#" in color_token:
+                    return color_token.split(",#")[1].rstrip(")")
+                return "#000000"
+            if color_token.startswith("theme("):
+                if ",#" in color_token:
+                    return color_token.split(",#")[1].rstrip(")")
+                return "#000000"
+            return "#000000"
 
-        if color_ids:
-            lines.append("\n## Border Colors")
-            for color, color_id in sorted(color_ids.items(), key=lambda item: item[1]):
-                lines.append(f"  {color_id}: {color}")
-
-        if spec_ids:
-            lines.append("\n## Border Specs")
-            for (side, style, color), spec_id in sorted(spec_ids.items(), key=lambda item: item[1]):
-                color_part = f" {color_ids[color]}" if color in color_ids else ""
-                lines.append(f"  {spec_id}: {side} {style}{color_part}")
-
-        lines.append("\n## Borders Raw")
-        refs_by_spec = defaultdict(list)
-        top_by_sig = defaultdict(list)
-        bottom_by_sig = defaultdict(list)
-        left_lookup = {}
-        right_lookup = {}
-
+        # Compact border format: group sides per range, one line each
+        # Format: RANGE SIDES WEIGHT [COLOR]  (color omitted if black)
+        from collections import defaultdict as _dd
+        border_groups = _dd(list)  # (range, weight, color) -> [sides]
         for side, style, color, row1, col1, row2, col2 in edge_spans:
-            spec_id = spec_ids[(side, style, color)]
             ref = _cells_ref(row1, col1, row2, col2)
-            refs_by_spec[spec_id].append((row1, col1, ref))
-            if side == "top":
-                top_by_sig[(style, color, col1, col2)].append((row1, spec_id, ref))
-            elif side == "bottom":
-                bottom_by_sig[(style, color, col1, col2)].append((row1, spec_id, ref))
-            elif side == "left":
-                left_lookup[(style, color, col1, row1, row2)] = (spec_id, ref)
-            elif side == "right":
-                right_lookup[(style, color, col1, row1, row2)] = (spec_id, ref)
+            hex_color = _color_to_hex(color)
+            weight = weight_map.get(style, "thin")
+            border_groups[(ref, weight.lower(), hex_color)].append(side)
 
-        for spec_id in sorted(refs_by_spec.keys(), key=lambda value: int(value[2:])):
-            refs = " | ".join(ref for _, _, ref in sorted(refs_by_spec[spec_id]))
-            lines.append(f"  {spec_id}: {refs}")
-
-        lines.append("\n## Structural Regions")
-        structural_lines = []
-        seen_outlines = set()
-        outline_specs = set()
-
-        for (style, color, col1, col2), tops in sorted(top_by_sig.items()):
-            bottoms = sorted(bottom_by_sig.get((style, color, col1, col2), []))
-            if not bottoms:
-                continue
-            for top_row, top_spec, top_ref in sorted(tops):
-                for bottom_row, bottom_spec, bottom_ref in bottoms:
-                    if bottom_row <= top_row:
-                        continue
-                    left_meta = left_lookup.get((style, color, col1, top_row, bottom_row))
-                    right_meta = right_lookup.get((style, color, col2, top_row, bottom_row))
-                    if not left_meta or not right_meta:
-                        continue
-                    outline_key = (top_row, col1, bottom_row, col2, style, color)
-                    if outline_key in seen_outlines:
-                        continue
-                    seen_outlines.add(outline_key)
-                    ref = _cells_ref(top_row, col1, bottom_row, col2)
-                    left_spec, left_ref = left_meta
-                    right_spec, right_ref = right_meta
-                    outline_specs.update({top_spec, bottom_spec, left_spec, right_spec})
-                    structural_lines.append(
-                        (
-                            top_row,
-                            col1,
-                            (
-                                f"  region kind:outline range:{ref} "
-                                f"top:{top_spec}@{top_ref} "
-                                f"bottom:{bottom_spec}@{bottom_ref} "
-                                f"left:{left_spec}@{left_ref} "
-                                f"right:{right_spec}@{right_ref}"
-                            ),
-                        )
-                    )
-
-        spec_by_id = {spec_id: spec for spec, spec_id in spec_ids.items()}
-        for spec_id in sorted(refs_by_spec.keys(), key=lambda value: int(value[2:])):
-            if spec_id in outline_specs:
-                continue
-            side, style, color = spec_by_id[spec_id]
-            if side in ("top", "bottom"):
-                kind = "hline"
-            else:
-                kind = "vline"
-            refs = " | ".join(ref for _, _, ref in sorted(refs_by_spec[spec_id]))
-            color_part = f" color:{color_ids[color]}" if color in color_ids else ""
-            structural_lines.append(
-                (
-                    9999,
-                    int(spec_id[2:]),
-                    f"  region kind:{kind} edge:{side} spec:{spec_id} style:{style}{color_part} ranges:{refs}",
-                )
-            )
-
-        structural_lines.sort()
-        lines.extend(line for _, _, line in structural_lines)
+        if border_groups:
+            lines.append("\n## Borders")
+            lines.append("# Format: RANGE SIDES WEIGHT [COLOR if not black]")
+            for (ref, weight, color), sides in sorted(border_groups.items()):
+                sides_str = "+".join(sorted(set(sides)))
+                color_str = f" {color}" if color != "#000000" else ""
+                lines.append(f"  {ref} {sides_str} {weight}{color_str}")
 
         (styles_dir / f"{source_tag}{ws.title}.txt").write_text("\n".join(lines))
 
     # 5. Screenshots: real LibreOffice renders via PDF → PNG
     screenshots_dir = EVALS / "screenshots"
-    render_screenshots(xlsx_path, sheet_names, screenshots_dir, source_tag)
+    active_names = [ws.title for ws in active_sheets]
+    render_screenshots(xlsx_path, active_names, screenshots_dir, source_tag)
 
     print(f"Dump complete: {EVALS} (tagged: {source_tag.strip()})")
 
 
 if __name__ == "__main__":
-    model = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "models" / "model.xlsx"
-    dump(model)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("xlsx", nargs="?", default=str(ROOT / "models" / "model.xlsx"))
+    parser.add_argument("--sheets", help="Comma-separated sheet names to dump (default: all)")
+    args = parser.parse_args()
+    sheet_filter = [s.strip() for s in args.sheets.split(",")] if args.sheets else None
+    dump(Path(args.xlsx), sheets=sheet_filter)

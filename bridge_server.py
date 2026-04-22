@@ -103,11 +103,13 @@ class BridgeServer:
     async def send_chat(self, text: str) -> None:
         ws = self._addin_ws
         if ws is None:
+            print(f"[harness] WARNING: chat dropped (no WS): {text[:80]}")
             return
         try:
             await ws.send(json.dumps({"type": "chat", "text": text}))
         except websockets.exceptions.ConnectionClosed:
-            pass
+            self._addin_ws = None
+            print(f"[harness] WARNING: chat dropped (WS closed): {text[:80]}")
 
     async def _handle_api_command(self, request: web.Request) -> web.Response:
         try:
@@ -162,6 +164,19 @@ class BridgeServer:
             return resp
         return web.Response(status=404, text="Not found")
 
+    async def send_sheet_mapper(self, files: list[dict]) -> dict:
+        """Send sheet mapper UI to taskpane and wait for user selection."""
+        msg_id = f"map-{id(files)}"
+        future = asyncio.get_event_loop().create_future()
+        self._pending[msg_id] = future
+        await self._addin_ws.send(json.dumps({
+            "type": "sheetMapper",
+            "id": msg_id,
+            "files": files,
+        }))
+        result = await future
+        return result.get("selected", {})
+
     async def _handle_addin_ws(self, websocket):
         self._addin_ws = websocket
         try:
@@ -170,6 +185,11 @@ class BridgeServer:
                 msg_type = data.get("type")
                 if msg_type == "chat":
                     self.chat_queue.enqueue(data.get("text", ""))
+                    continue
+                if msg_type == "sheetMapResponse":
+                    msg_id = data.get("id")
+                    if msg_id and msg_id in self._pending:
+                        self._pending[msg_id].set_result(data)
                     continue
                 # Command response
                 msg_id = data.get("id")

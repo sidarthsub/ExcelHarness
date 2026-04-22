@@ -13,6 +13,71 @@ class BridgeError(Exception):
     pass
 
 
+def _copy_cell_format(cell) -> dict:
+    """Extract a format dict from an openpyxl cell matching the bridge's formatRange schema.
+
+    Skips default values to keep the payload minimal. Used by copy_sheet_from_input.
+    """
+    fmt: dict = {}
+    font: dict = {}
+    if cell.font.name and cell.font.name != "Calibri":
+        font["name"] = cell.font.name
+    if cell.font.size and cell.font.size != 11.0:
+        font["size"] = float(cell.font.size)
+    if cell.font.bold:
+        font["bold"] = True
+    if cell.font.italic:
+        font["italic"] = True
+    color = cell.font.color
+    if color is not None and getattr(color, "rgb", None):
+        rgb = color.rgb
+        if isinstance(rgb, str) and len(rgb) >= 6:
+            hex_rgb = rgb[-6:].upper()
+            if hex_rgb != "000000":
+                font["color"] = f"#{hex_rgb}"
+    if font:
+        fmt["font"] = font
+
+    if cell.fill.patternType == "solid":
+        fg = cell.fill.fgColor
+        if fg is not None and getattr(fg, "rgb", None):
+            rgb = fg.rgb
+            if isinstance(rgb, str) and len(rgb) >= 6:
+                hex_rgb = rgb[-6:].upper()
+                if hex_rgb != "FFFFFF":
+                    fmt["fill"] = {"color": f"#{hex_rgb}"}
+
+    align = cell.alignment.horizontal
+    if align in ("center", "right", "left", "centerContinuous"):
+        mapping = {
+            "center": "Center",
+            "right": "Right",
+            "left": "Left",
+            "centerContinuous": "CenterAcrossSelection",
+        }
+        fmt["horizontalAlignment"] = mapping[align]
+
+    return fmt
+
+
+def _freeze(obj):
+    """Recursively convert a dict/list into a hashable tuple form for dict keys."""
+    if isinstance(obj, dict):
+        return tuple(sorted((k, _freeze(v)) for k, v in obj.items()))
+    if isinstance(obj, list):
+        return tuple(_freeze(v) for v in obj)
+    return obj
+
+
+def _thaw(obj):
+    """Inverse of _freeze — reconstruct dict/list form."""
+    if isinstance(obj, tuple) and obj and isinstance(obj[0], tuple) and len(obj[0]) == 2 and isinstance(obj[0][0], str):
+        return {k: _thaw(v) for k, v in obj}
+    if isinstance(obj, tuple):
+        return [_thaw(v) for v in obj]
+    return obj
+
+
 class Bridge:
     def __init__(self, base_url: str = "https://localhost:3000", verify_tls: bool = True, timeout: float = 60.0):
         self.base_url = base_url.rstrip("/")
@@ -82,6 +147,9 @@ class Bridge:
     def freeze_rows(self, sheet: str, count: int) -> dict:
         return self._call("freezeRows", {"sheet": sheet, "count": count})
 
+    def set_show_gridlines(self, sheet: str, show: bool) -> dict:
+        return self._call("setShowGridLines", {"sheet": sheet, "show": show})
+
     def clear_range(self, sheet: str, address: str) -> dict:
         return self._call("clearRange", {"sheet": sheet, "address": address})
 
@@ -109,6 +177,121 @@ class Bridge:
 
     def dump_sheet(self, sheet: str) -> dict:
         return self._call("dumpSheet", {"sheet": sheet})
+
+    def copy_sheet_from_input(
+        self,
+        xlsx_path: str,
+        source_sheet: str,
+        target_sheet: str | None = None,
+    ) -> dict:
+        """Copy a sheet from an input xlsx into the live workbook via openpyxl.
+
+        Replaces `create_sheet` + dozens of write/format calls for "this sheet
+        is an exact copy of the input" cases. Handles values, formulas,
+        column widths, row heights, gridlines, and per-cell formatting
+        (font, fill, alignment, number format). Idempotent — deletes the
+        target sheet if it already exists.
+
+        Args:
+            xlsx_path: absolute path to the source .xlsx.
+            source_sheet: sheet name within the xlsx to copy.
+            target_sheet: name for the new live sheet. Defaults to source_sheet.
+        """
+        import openpyxl
+        from collections import defaultdict
+        from openpyxl.utils import get_column_letter
+        from pathlib import Path
+
+        path = Path(xlsx_path).expanduser()
+        if not path.exists():
+            raise BridgeError(f"copy_sheet_from_input: file not found: {path}")
+
+        wb = openpyxl.load_workbook(path, data_only=False)
+        if source_sheet not in wb.sheetnames:
+            raise BridgeError(
+                f"copy_sheet_from_input: sheet '{source_sheet}' not in {path.name} "
+                f"(available: {wb.sheetnames})"
+            )
+        ws = wb[source_sheet]
+        target = target_sheet or source_sheet
+
+        self.create_sheet(target)
+
+        if ws.sheet_view.showGridLines is False:
+            self.set_show_gridlines(target, False)
+
+        widths = {c: d.width for c, d in ws.column_dimensions.items() if d.width}
+        if widths:
+            self.set_column_widths(target, widths)
+
+        heights = {str(r): d.height for r, d in ws.row_dimensions.items() if d.height}
+        if heights:
+            self.set_row_heights(target, heights)
+
+        max_row = ws.max_row or 0
+        max_col = ws.max_column or 0
+        if not (max_row and max_col):
+            wb.close()
+            return {"ok": True, "target": target, "note": "empty source sheet"}
+
+        values = [[None] * max_col for _ in range(max_row)]
+        formulas = [[None] * max_col for _ in range(max_row)]
+        has_values = False
+        has_formulas = False
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if v is None:
+                    continue
+                r, c = cell.row - 1, cell.column - 1
+                if isinstance(v, str) and v.startswith("="):
+                    formulas[r][c] = v
+                    has_formulas = True
+                else:
+                    values[r][c] = v
+                    has_values = True
+
+        full_range = f"A1:{get_column_letter(max_col)}{max_row}"
+        if has_values:
+            self.write_values(target, full_range, values)
+        if has_formulas:
+            self.write_formulas(target, full_range, formulas)
+
+        # Group cells by identical format signature → one format_range call per group.
+        format_groups: dict[tuple, list[str]] = defaultdict(list)
+        numfmt_groups: dict[str, list[str]] = defaultdict(list)
+        for row in ws.iter_rows():
+            for cell in row:
+                fmt = _copy_cell_format(cell)
+                if fmt:
+                    format_groups[_freeze(fmt)].append(cell.coordinate)
+                nf = cell.number_format
+                if nf and nf != "General":
+                    numfmt_groups[nf].append(cell.coordinate)
+
+        batch_cmds = []
+        for fmt_key, coords in format_groups.items():
+            fmt = _thaw(fmt_key)
+            batch_cmds.append({
+                "command": "formatRange",
+                "params": {"sheet": target, "address": ",".join(coords), "format": fmt},
+            })
+        for nf, coords in numfmt_groups.items():
+            batch_cmds.append({
+                "command": "setNumberFormat",
+                "params": {"sheet": target, "address": ",".join(coords), "format": nf},
+            })
+
+        if batch_cmds:
+            self.batch(batch_cmds)
+
+        wb.close()
+        return {
+            "ok": True,
+            "target": target,
+            "format_groups": len(format_groups),
+            "numfmt_groups": len(numfmt_groups),
+        }
 
     def protect_workbook(self, password: str | None = None) -> dict:
         return self._call("protectWorkbook", {"password": password})
