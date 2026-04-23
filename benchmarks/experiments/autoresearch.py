@@ -25,6 +25,8 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import signal
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -49,6 +51,7 @@ PROPOSALS_DIR = BENCH_ROOT / "experiments" / "proposals"
 HISTORY_PATH = BENCH_ROOT / "experiments" / "history.jsonl"
 LAST_EVAL_PATH = PROPOSALS_DIR / "last_eval.json"
 STATUS_PATH = BENCH_ROOT / "experiments" / "status.json"
+PIDFILE_PATH = BENCH_ROOT / "experiments" / "autoresearch.pid"
 
 # Promotion gates.
 CANARY_REGRESSION_TOL = 0.02   # Researcher bails out itself if canary worse than this.
@@ -324,6 +327,67 @@ def _write_status(**fields: Any) -> None:
     STATUS_PATH.write_text(json.dumps(existing, indent=2, default=str))
 
 
+# ---- process-group management --------------------------------------------
+
+
+def _write_pidfile() -> None:
+    """Own a fresh process group and record our PIDs for shutdown.py.
+
+    Claude Agent SDK subprocesses + their eval_current children + Excel
+    instances all inherit this PGID unless they explicitly setsid, so
+    `kill -TERM -<pgid>` cleans up the whole tree in one shot. Without
+    this, SIGKILL to the main process orphans subprocesses and leaves
+    Excel + HTTP servers running.
+    """
+    try:
+        os.setpgrp()
+    except OSError as e:
+        log.warning(f"could not create new process group: {e}")
+    payload = {
+        "pid": os.getpid(),
+        "pgid": os.getpgrp(),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    PIDFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PIDFILE_PATH.write_text(json.dumps(payload, indent=2))
+    log.info(f"pid={payload['pid']} pgid={payload['pgid']} pidfile={PIDFILE_PATH}")
+
+
+def _remove_pidfile() -> None:
+    try:
+        PIDFILE_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _install_signal_handlers() -> None:
+    """Catch TERM/INT to mark shutdown and propagate to the process group.
+
+    We kill the group ourselves rather than relying on the shell — ensures
+    Excel/xlwings children die even if they've been re-parented.
+    """
+    def _handler(signum, frame):
+        log.warning(f"received signal {signum}; tearing down…")
+        _write_status(phase="shutting_down", received_signal=signum)
+        _remove_pidfile()
+        try:
+            os.killpg(os.getpgrp(), signal.SIGTERM)
+        except Exception:
+            pass
+        # Escalate if anything survives after a short grace window.
+        time.sleep(2)
+        try:
+            os.killpg(os.getpgrp(), signal.SIGKILL)
+        except Exception:
+            pass
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            pass
+
+
 # ---- outer loop -----------------------------------------------------------
 
 
@@ -332,8 +396,11 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
                      rotate: bool = False,
                      seed: int | None = None) -> None:
     PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+    _write_pidfile()
+    _install_signal_handlers()
 
     if not _git_working_tree_clean():
+        _remove_pidfile()
         raise SystemExit(
             "refuse to start autoresearch with a dirty working tree. "
             "commit or stash first."
@@ -496,6 +563,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
 
     _write_status(phase="done", baseline_loss=baseline_loss, spent_usd=round(spent, 4))
     log.info(f"done. spent=${spent:.2f}, baseline_loss={baseline_loss:.4f}")
+    _remove_pidfile()
 
 
 # ---- CLI -----------------------------------------------------------------

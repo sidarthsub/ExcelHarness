@@ -9,6 +9,7 @@ benchmarks/cache/
 benchmarks/experiments/runs.sqlite
 benchmarks/experiments/status.json
 benchmarks/experiments/history.jsonl
+benchmarks/experiments/autoresearch.pid
 benchmarks/experiments/proposals/
 
 # Secrets
