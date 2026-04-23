@@ -1,0 +1,256 @@
+"""Evaluate the current working-tree harness on a task set and report corpus loss.
+
+The Researcher calls this after every edit. It:
+
+  1. Runs `headless_builder.run_headless` for each (task × seed) in the
+     requested set. Runs are serial by default — the pseudo-bridge drives
+     a hidden Excel instance via xlwings, which is not safe to spin up
+     concurrently on macOS. `--parallel N` opts into concurrency once
+     verified per-machine.
+  2. Writes each result into the SQLite store tagged with `--label`.
+  3. Computes and prints corpus loss + per-task breakdown as a single
+     JSON object to stdout (the Researcher reads this).
+
+Two standard task sets are wired in:
+
+  - canary (--set canary)    : one task per tier, small. Fast signal.
+  - visible (--set visible)  : the training split. Researcher sees these.
+  - holdout (--set holdout)  : promotion gate. Researcher must NOT tune
+                               against these directly.
+
+You can also pass `--tasks t0_npv,t1_...` to override.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from benchmarks.experiments import store as store_mod
+from benchmarks.experiments.loss import corpus_loss, per_run_loss
+from benchmarks.headless_builder import run_headless
+
+
+log = logging.getLogger("eval_current")
+
+
+# ---- task sets -------------------------------------------------------------
+
+CANARY_SET = ["t0_npv", "t1_inputs_from_term_sheet"]
+
+VISIBLE_SET = [
+    "t0_npv",
+    "t0_option_pool_issuance",
+    "t1_inputs_from_term_sheet",
+    "t2_safe_convert_series_a",
+]
+
+HOLDOUT_SET = [
+    "t0_dcf_terminal_value",
+    "t1_revenue_build",
+    "t2_lbo_mini",
+]
+
+
+def resolve_task_set(name: str | None, explicit: str | None) -> list[str]:
+    if explicit:
+        return [t.strip() for t in explicit.split(",") if t.strip()]
+    return {
+        "canary":  CANARY_SET,
+        "visible": VISIBLE_SET,
+        "holdout": HOLDOUT_SET,
+    }[name or "canary"]
+
+
+# ---- runner ---------------------------------------------------------------
+
+
+@dataclass
+class Cell:
+    task_id: str
+    seed: int
+
+
+def _git_sha() -> str | None:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        return out or None
+    except Exception:
+        return None
+
+
+async def _one_run(cell: Cell, *, model: str, skip_planner: bool,
+                   time_budget: float | None, max_turns: int) -> dict:
+    log.info(f"running {cell.task_id} seed={cell.seed}")
+    t0 = time.time()
+    try:
+        result = await run_headless(
+            task_id=cell.task_id,
+            model=model,
+            time_budget_seconds=time_budget,
+            max_turns=max_turns,
+            skip_planner=skip_planner,
+        )
+    except Exception as e:
+        # Synthesize a failure result so the corpus loss still accounts
+        # for the cell rather than crashing the whole eval.
+        log.warning(f"{cell.task_id} seed={cell.seed} crashed: {type(e).__name__}: {e}")
+        result = {
+            "task_id": cell.task_id,
+            "tier": None,
+            "run_dir": None,
+            "candidate": None,
+            "completed": False,
+            "terminated_reason": f"crashed:{type(e).__name__}",
+            "wall_seconds": time.time() - t0,
+            "time_budget_seconds": time_budget or 600,
+            "over_budget": False,
+            "builder_model": model,
+            "builder_usage": {},
+            "planner_stats": {},
+            "dollars": 0.0,
+            "accuracy": 0.0,
+            "passed": 0,
+            "total": 0,
+            "checks": [],
+            "grading_error": str(e),
+        }
+    result["seed"] = cell.seed
+    return result
+
+
+async def run_eval(
+    *,
+    tasks: list[str],
+    seeds: int,
+    label: str,
+    model: str,
+    skip_planner: bool,
+    time_budget: float | None,
+    max_turns: int,
+    parallel: int,
+) -> dict[str, Any]:
+    cells = [Cell(task_id=t, seed=s) for t in tasks for s in range(seeds)]
+
+    results: list[dict] = []
+    if parallel <= 1:
+        for c in cells:
+            results.append(await _one_run(
+                c, model=model, skip_planner=skip_planner,
+                time_budget=time_budget, max_turns=max_turns,
+            ))
+    else:
+        sem = asyncio.Semaphore(parallel)
+
+        async def _guarded(c: Cell):
+            async with sem:
+                return await _one_run(
+                    c, model=model, skip_planner=skip_planner,
+                    time_budget=time_budget, max_turns=max_turns,
+                )
+
+        results = list(await asyncio.gather(*[_guarded(c) for c in cells]))
+
+    # Persist to store
+    git_sha = _git_sha()
+    conn = store_mod.connect()
+    try:
+        for r in results:
+            run_dir = Path(r["run_dir"]) if r.get("run_dir") else Path(f"/tmp/crashed_{r['task_id']}_{r['seed']}")
+            store_mod.insert_run(conn, r, run_dir, label=label, seed=r["seed"], git_sha=git_sha)
+    finally:
+        conn.close()
+
+    # Per-task rollup
+    by_task: dict[str, list[dict]] = {}
+    for r in results:
+        by_task.setdefault(r["task_id"], []).append(r)
+    per_task: dict[str, dict] = {}
+    for task_id, rs in by_task.items():
+        agg = corpus_loss(rs)
+        per_task[task_id] = {
+            "n": agg["n"],
+            "loss": round(agg["corpus_loss"], 4),
+            "mean_accuracy": round(agg["mean_accuracy"], 4),
+            "mean_cost_cold_usd": round(agg["mean_cost_cold_usd"], 4),
+            "mean_cost_actual_usd": round(agg["mean_cost_actual_usd"], 4),
+            "mean_wall_seconds": round(agg["mean_wall_seconds"], 1),
+            "completion_rate": round(agg["completion_rate"], 3),
+        }
+
+    overall = corpus_loss(results)
+    return {
+        "label": label,
+        "git_sha": git_sha,
+        "tasks": tasks,
+        "seeds": seeds,
+        "n_runs": len(results),
+        "corpus_loss": round(overall["corpus_loss"], 4),
+        "mean_accuracy": round(overall["mean_accuracy"], 4),
+        "mean_cost_cold_usd": round(overall["mean_cost_cold_usd"], 4),
+        "mean_cost_actual_usd": round(overall["mean_cost_actual_usd"], 4),
+        "mean_wall_seconds": round(overall["mean_wall_seconds"], 1),
+        "completion_rate": round(overall["completion_rate"], 3),
+        "eval_cost_usd": round(sum(r.get("dollars") or 0.0 for r in results), 4),
+        "per_task": per_task,
+    }
+
+
+# ---- CLI ------------------------------------------------------------------
+
+
+def _main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    ap = argparse.ArgumentParser(prog="benchmarks.experiments.eval_current")
+    ap.add_argument("--set", dest="task_set", choices=["canary", "visible", "holdout"],
+                    default="canary")
+    ap.add_argument("--tasks", default=None,
+                    help="Comma-separated task IDs. Overrides --set when provided.")
+    ap.add_argument("--seeds", type=int, default=2,
+                    help="Seeds per task. Default 2 — bump to 3 for promotion gates.")
+    ap.add_argument("--label", required=True,
+                    help="Identifier for this eval batch (researcher writes this).")
+    ap.add_argument("--model", default="sonnet")
+    ap.add_argument("--skip-planner", action="store_true")
+    ap.add_argument("--time-budget", type=float, default=None,
+                    help="Override every task's time_budget_seconds.")
+    ap.add_argument("--max-turns", type=int, default=40)
+    ap.add_argument("--parallel", type=int, default=4,
+                    help="Concurrent runs. Verified safe up to 4 on macOS via benchmarks.experiments.parallelism_probe.")
+    ap.add_argument("--pretty", action="store_true")
+    args = ap.parse_args()
+
+    tasks = resolve_task_set(args.task_set, args.tasks)
+    log.info(f"eval label={args.label} tasks={tasks} seeds={args.seeds} model={args.model}")
+
+    report = asyncio.run(run_eval(
+        tasks=tasks,
+        seeds=args.seeds,
+        label=args.label,
+        model=args.model,
+        skip_planner=args.skip_planner,
+        time_budget=args.time_budget,
+        max_turns=args.max_turns,
+        parallel=args.parallel,
+    ))
+    print(json.dumps(report, indent=2 if args.pretty else None, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main())
