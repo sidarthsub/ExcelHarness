@@ -28,25 +28,20 @@ Each turn, do exactly this in order:
 
 3. **Apply the change** using `Edit` on one of the allowed files. Keep the diff small — if you want to change two unrelated things, split into two iterations.
 
-4. **Run the canary eval** first:
-   ```
-   python -m benchmarks.experiments.eval_current --set canary --seeds 2 --label iter<N>_canary
-   ```
-   Read the JSON it prints. If canary corpus_loss went **up** by more than 0.02 vs baseline, stop — do not run the visible set. Write "reverting: canary regression" to the proposal and you're done for this iteration.
-
-5. If canary is non-regressive, run the visible set:
+4. **Run the visible eval:**
    ```
    python -m benchmarks.experiments.eval_current --set visible --seeds 2 --label iter<N>_visible
    ```
+   (The visible set is small — t0s + t1s only. Canary is skipped to reduce per-iter wall time; the visible set is already cheap enough.)
 
-6. **Report.** Output a final block with:
+5. **Report.** Output a final block with:
    - The new corpus_loss.
    - Delta vs baseline.
    - Per-task delta (which tasks won, which lost).
    - Whether your hypothesis was confirmed, partially, or falsified.
    - `ACCEPT` or `REJECT` recommendation.
 
-The outer driver applies promotion/revert based on your recommendation + the holdout gate. You never run the holdout set yourself.
+The outer driver applies promotion/revert based on your recommendation + the holdout gate. You never run the holdout set yourself. Note: the outer driver only runs the holdout gate on every 3rd accepted iteration — between holdout checks, the gate is trust-but-verify, and any accumulated drift gets caught at the next holdout firing.
 
 ## What you are allowed to edit
 

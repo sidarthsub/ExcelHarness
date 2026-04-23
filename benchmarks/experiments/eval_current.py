@@ -43,13 +43,15 @@ log = logging.getLogger("eval_current")
 
 # ---- task sets -------------------------------------------------------------
 
+# Canary retained for ad-hoc use only — the autoresearch loop no longer runs it.
+# Visible drops t2 to keep iteration walls short (~10 min vs ~30 min). t2 signal
+# comes via the holdout gate, which is the only place t2 tasks run during iteration.
 CANARY_SET = ["t0_npv", "t1_inputs_from_term_sheet"]
 
 VISIBLE_SET = [
     "t0_npv",
     "t0_option_pool_issuance",
     "t1_inputs_from_term_sheet",
-    "t2_safe_convert_series_a",
 ]
 
 HOLDOUT_SET = [

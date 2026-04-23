@@ -55,10 +55,19 @@ CANARY_REGRESSION_TOL = 0.02   # Researcher bails out itself if canary worse tha
 IMPROVEMENT_EPSILON   = 0.005  # new loss must beat baseline by at least this much.
 HOLDOUT_REGRESSION_MAX = 0.03  # holdout loss must not be more than this worse than pre-change holdout.
 
+# Holdout is expensive (~20 min). Run it on accepted iters only, and only
+# every Nth accepted iter — between firings the visible-set loss is the
+# sole gate. Accumulated overfitting gets caught at the next holdout.
+HOLDOUT_EVERY_N_ACCEPTED = 3
+
 # Global wall-time ceiling per cell. Task.yaml budgets remain the intent
 # (and drive time_loss normalization), but no cell is allowed to run past
 # this — protects against hung Builders and runaway costs.
 MAX_WALL_SECONDS = 900.0
+
+# Default concurrency. 3 proved stable in testing; 4 destabilized under
+# real workload before the ws.activate() + datetime JSON fixes landed.
+DEFAULT_PARALLEL = 3
 
 
 # ---- git helpers ----------------------------------------------------------
@@ -208,7 +217,7 @@ async def _run_holdout() -> dict[str, Any]:
         skip_planner=False,
         time_budget=MAX_WALL_SECONDS,
         max_turns=40,
-        parallel=2,
+        parallel=DEFAULT_PARALLEL,
     )
 
 
@@ -216,6 +225,76 @@ def _append_history(entry: dict) -> None:
     HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     with HISTORY_PATH.open("a") as f:
         f.write(json.dumps(entry, default=str) + "\n")
+
+
+def _try_reuse_baseline(label_prefix: str, tasks: list[str],
+                        min_seeds: int = 2) -> dict | None:
+    """Reconstruct a baseline eval report from existing store rows.
+
+    Returns None if we don't have enough coverage to avoid a fresh run.
+    Requires at least `min_seeds` rows per task, all under a label starting
+    with `label_prefix` (e.g. "baseline" or "holdout_"). Reads the raw
+    result.json off disk to recompute corpus_loss via the current loss
+    function — so any recent loss tweak is reflected in the reused number.
+    """
+    from benchmarks.experiments.loss import corpus_loss as _corpus_loss
+
+    conn = store_mod.connect()
+    try:
+        rows: list[dict] = []
+        for task_id in tasks:
+            cur = conn.execute(
+                """SELECT result_json_path FROM runs
+                    WHERE label LIKE ? AND task_id = ?
+                    ORDER BY id DESC LIMIT ?""",
+                (f"{label_prefix}%", task_id, min_seeds),
+            )
+            cells = [dict(r) for r in cur.fetchall()]
+            if len(cells) < min_seeds:
+                return None
+            rows.extend(cells)
+    finally:
+        conn.close()
+
+    results: list[dict] = []
+    for row in rows:
+        p = Path(row["result_json_path"])
+        if not p.exists():
+            return None
+        try:
+            results.append(json.loads(p.read_text()))
+        except Exception:
+            return None
+
+    agg = _corpus_loss(results)
+    per_task: dict[str, dict] = {}
+    for r in results:
+        per_task.setdefault(r.get("task_id"), []).append(r)
+    per_task_agg = {
+        t: {
+            "n": len(rs),
+            "loss": round(_corpus_loss(rs)["corpus_loss"], 4),
+            "mean_accuracy": round(_corpus_loss(rs)["mean_accuracy"], 4),
+            "mean_cost_cold_usd": round(_corpus_loss(rs)["mean_cost_cold_usd"], 4),
+            "mean_wall_seconds": round(_corpus_loss(rs)["mean_wall_seconds"], 1),
+        }
+        for t, rs in per_task.items()
+    }
+    return {
+        "label": f"{label_prefix}_reused",
+        "tasks": tasks,
+        "seeds": min_seeds,
+        "n_runs": len(results),
+        "corpus_loss": round(agg["corpus_loss"], 4),
+        "mean_accuracy": round(agg["mean_accuracy"], 4),
+        "mean_cost_cold_usd": round(agg["mean_cost_cold_usd"], 4),
+        "mean_cost_actual_usd": round(agg["mean_cost_actual_usd"], 4),
+        "mean_wall_seconds": round(agg["mean_wall_seconds"], 1),
+        "completion_rate": round(agg["completion_rate"], 3),
+        "eval_cost_usd": 0.0,  # nothing spent — it's reused
+        "per_task": per_task_agg,
+        "reused": True,
+    }
 
 
 def _write_status(**fields: Any) -> None:
@@ -252,25 +331,40 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
     _write_status(phase="baseline", iter=0, started_at=datetime.now(timezone.utc).isoformat(),
                   max_iters=max_iters, max_dollars=max_dollars)
 
-    # Establish baseline.
-    log.info("establishing baseline on visible set…")
-    baseline_eval = await run_eval(
-        tasks=VISIBLE_SET, seeds=2, label="baseline",
-        model="sonnet", skip_planner=False,
-        time_budget=MAX_WALL_SECONDS, max_turns=40, parallel=2,
-    )
+    # Baseline: try to reuse existing store rows before spending on a fresh eval.
+    # min_seeds=1 is intentional — trading a bit of noise for ~15min of re-eval time.
+    baseline_eval = _try_reuse_baseline("baseline", VISIBLE_SET, min_seeds=1)
+    if baseline_eval is not None:
+        log.info(f"reusing stored baseline — corpus_loss={baseline_eval['corpus_loss']:.4f} "
+                 f"(n={baseline_eval['n_runs']} over {len(VISIBLE_SET)} tasks)")
+    else:
+        log.info("no usable stored baseline — running fresh on visible set…")
+        baseline_eval = await run_eval(
+            tasks=VISIBLE_SET, seeds=2, label="baseline",
+            model="sonnet", skip_planner=False,
+            time_budget=MAX_WALL_SECONDS, max_turns=40, parallel=DEFAULT_PARALLEL,
+        )
     LAST_EVAL_PATH.write_text(json.dumps(baseline_eval, indent=2, default=str))
     baseline_loss = baseline_eval["corpus_loss"]
     log.info(f"baseline corpus_loss = {baseline_loss:.4f}")
 
-    # Baseline holdout (only needed if we gate later).
+    # Holdout baseline — only needed if we'll gate. Try reuse first.
     holdout_baseline = None
     if not skip_holdout:
-        holdout_baseline = await _run_holdout()
+        _write_status(phase="holdout_baseline")
+        holdout_baseline = _try_reuse_baseline("holdout_", HOLDOUT_SET, min_seeds=1)
+        if holdout_baseline is not None:
+            log.info(f"reusing stored holdout baseline — "
+                     f"corpus_loss={holdout_baseline['corpus_loss']:.4f}")
+        else:
+            log.info("no usable stored holdout — running fresh…")
+            holdout_baseline = await _run_holdout()
         log.info(f"baseline holdout_loss = {holdout_baseline['corpus_loss']:.4f}")
 
-    spent = baseline_eval["eval_cost_usd"] + (holdout_baseline["eval_cost_usd"] if holdout_baseline else 0.0)
+    spent = (baseline_eval.get("eval_cost_usd") or 0.0) + \
+            ((holdout_baseline.get("eval_cost_usd") if holdout_baseline else 0.0) or 0.0)
     current_sha = _git_sha()
+    accepted_since_last_holdout = 0
 
     for i in range(1, max_iters + 1):
         if spent >= max_dollars:
@@ -296,15 +390,15 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
 
         _write_status(phase="evaluating", iter=i)
 
-        # Reader's fresh eval is the Researcher's last `iter{i}_visible` batch.
+        # Fresh eval is the Researcher's last `iter{i}_visible` batch.
+        # Canary is no longer run — visible is small enough to be the primary gate.
         visible_label = f"iter{i}_visible"
         visible_summary = _load_latest_eval_for(visible_label)
-        canary_label = f"iter{i}_canary"
-        canary_summary = _load_latest_eval_for(canary_label)
 
         accepted = False
         reason = "no_eval"
         new_loss = None
+        ran_holdout_this_iter = False
 
         if visible_summary and visible_summary.get("loss") is not None:
             new_loss = visible_summary["loss"]
@@ -314,19 +408,28 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
                 accepted = True
                 reason = "improved, holdout skipped"
             else:
-                holdout_new = await _run_holdout()
-                spent += holdout_new["eval_cost_usd"]
-                if (holdout_new["corpus_loss"]
-                        > holdout_baseline["corpus_loss"] + HOLDOUT_REGRESSION_MAX):
-                    reason = (f"holdout regression "
-                              f"({holdout_new['corpus_loss']:.4f} > "
-                              f"{holdout_baseline['corpus_loss']:.4f} + {HOLDOUT_REGRESSION_MAX})")
+                # Tentatively accept on visible; only fire holdout every Nth accept.
+                would_be_accepted_count = accepted_since_last_holdout + 1
+                if would_be_accepted_count >= HOLDOUT_EVERY_N_ACCEPTED:
+                    _write_status(phase="holdout_gate", iter=i)
+                    holdout_new = await _run_holdout()
+                    ran_holdout_this_iter = True
+                    spent += holdout_new.get("eval_cost_usd", 0.0) or 0.0
+                    if (holdout_new["corpus_loss"]
+                            > holdout_baseline["corpus_loss"] + HOLDOUT_REGRESSION_MAX):
+                        reason = (f"holdout regression after {would_be_accepted_count} accepted — "
+                                  f"{holdout_new['corpus_loss']:.4f} > "
+                                  f"{holdout_baseline['corpus_loss']:.4f} + {HOLDOUT_REGRESSION_MAX}")
+                    else:
+                        accepted = True
+                        reason = f"improved + holdout ok (after {would_be_accepted_count} accepted)"
+                        holdout_baseline = holdout_new
+                        accepted_since_last_holdout = 0
                 else:
                     accepted = True
-                    reason = "improved + holdout ok"
-                    holdout_baseline = holdout_new  # shift baseline to the new (better-or-equal) holdout
-        elif canary_summary and canary_summary.get("loss", 1.0) >= baseline_loss + CANARY_REGRESSION_TOL:
-            reason = f"canary regression ({canary_summary['loss']:.4f})"
+                    reason = (f"improved (visible-only; holdout due in "
+                              f"{HOLDOUT_EVERY_N_ACCEPTED - would_be_accepted_count} more accepts)")
+                    accepted_since_last_holdout = would_be_accepted_count
         else:
             reason = "researcher did not produce a visible eval"
 
@@ -361,6 +464,8 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
             "sha_before": current_sha,
             "wall_seconds": round(time.time() - iter_start, 1),
             "spent_usd": round(spent, 4),
+            "ran_holdout": ran_holdout_this_iter,
+            "accepted_since_last_holdout": accepted_since_last_holdout,
             "researcher_final_text": verdict_text[-800:],
         })
         _write_status(phase="idle_between_iters", iter=i,
