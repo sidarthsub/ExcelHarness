@@ -346,9 +346,11 @@ class XlwingsBackend:
         return {"ok": True}
 
     def freezeRows(self, sheet: str, count: int) -> dict:
-        # ActiveWindow requires the app to be foregrounded — ws.activate() raises
-        # "Could not activate App!" on hidden instances. For headless/parallel
-        # runs the freeze is cosmetic; swallow the error rather than crash.
+        # ActiveWindow requires the app to be foregrounded. ws.activate()
+        # briefly steals focus on macOS *before* raising, which is disruptive
+        # when the user is on their desktop. Skip entirely for hidden apps.
+        if not getattr(self.app, "visible", True):
+            return {"ok": True, "skipped": "hidden_app"}
         ws = self._sheet(sheet)
         try:
             ws.activate()
@@ -356,20 +358,22 @@ class XlwingsBackend:
             self.app.api.ActiveWindow.FreezePanes = True
             return {"ok": True}
         except Exception as e:
-            log.debug(f"freezeRows skipped (hidden app): {e}")
-            return {"ok": True, "skipped": "hidden_app"}
+            log.debug(f"freezeRows skipped: {e}")
+            return {"ok": True, "skipped": str(e)}
 
     def setShowGridLines(self, sheet: str, show: bool) -> dict:
-        # Same caveat as freezeRows — DisplayGridlines is a window-level
-        # property, so needs an active window which hidden apps can't provide.
+        # DisplayGridlines is a window-level property — same caveat as
+        # freezeRows. Skip for hidden apps to avoid macOS focus flashes.
+        if not getattr(self.app, "visible", True):
+            return {"ok": True, "skipped": "hidden_app"}
         ws = self._sheet(sheet)
         try:
             ws.activate()
             self.app.api.ActiveWindow.DisplayGridlines = bool(show)
             return {"ok": True}
         except Exception as e:
-            log.debug(f"setShowGridLines skipped (hidden app): {e}")
-            return {"ok": True, "skipped": "hidden_app"}
+            log.debug(f"setShowGridLines skipped: {e}")
+            return {"ok": True, "skipped": str(e)}
 
     def clearRange(self, sheet: str, address: str) -> dict:
         ws = self._sheet(sheet)
