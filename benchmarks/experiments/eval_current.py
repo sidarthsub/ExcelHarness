@@ -227,8 +227,10 @@ def _main() -> int:
                     help="Identifier for this eval batch (researcher writes this).")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--skip-planner", action="store_true")
-    ap.add_argument("--time-budget", type=float, default=None,
-                    help="Override every task's time_budget_seconds.")
+    ap.add_argument("--time-budget", type=float, default=900.0,
+                    help="Global wall-time ceiling (seconds) per cell. "
+                         "Default 900s (15 min). Task.yaml budgets are unchanged — "
+                         "they still drive the time_loss normalization.")
     ap.add_argument("--max-turns", type=int, default=40)
     ap.add_argument("--parallel", type=int, default=2,
                     help="Concurrent runs. parallel=4 destabilizes hidden Excel under real workload "

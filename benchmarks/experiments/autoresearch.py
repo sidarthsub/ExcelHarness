@@ -55,6 +55,11 @@ CANARY_REGRESSION_TOL = 0.02   # Researcher bails out itself if canary worse tha
 IMPROVEMENT_EPSILON   = 0.005  # new loss must beat baseline by at least this much.
 HOLDOUT_REGRESSION_MAX = 0.03  # holdout loss must not be more than this worse than pre-change holdout.
 
+# Global wall-time ceiling per cell. Task.yaml budgets remain the intent
+# (and drive time_loss normalization), but no cell is allowed to run past
+# this — protects against hung Builders and runaway costs.
+MAX_WALL_SECONDS = 900.0
+
 
 # ---- git helpers ----------------------------------------------------------
 
@@ -201,7 +206,7 @@ async def _run_holdout() -> dict[str, Any]:
         label=f"holdout_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
         model="sonnet",
         skip_planner=False,
-        time_budget=None,
+        time_budget=MAX_WALL_SECONDS,
         max_turns=40,
         parallel=2,
     )
@@ -252,7 +257,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
     baseline_eval = await run_eval(
         tasks=VISIBLE_SET, seeds=2, label="baseline",
         model="sonnet", skip_planner=False,
-        time_budget=None, max_turns=40, parallel=2,
+        time_budget=MAX_WALL_SECONDS, max_turns=40, parallel=2,
     )
     LAST_EVAL_PATH.write_text(json.dumps(baseline_eval, indent=2, default=str))
     baseline_loss = baseline_eval["corpus_loss"]
