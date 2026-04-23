@@ -55,7 +55,9 @@ PIDFILE_PATH = BENCH_ROOT / "experiments" / "autoresearch.pid"
 
 # Promotion gates.
 CANARY_REGRESSION_TOL = 0.02   # Researcher bails out itself if canary worse than this.
-IMPROVEMENT_EPSILON   = 0.005  # new loss must beat baseline by at least this much.
+IMPROVEMENT_EPSILON   = 0.03   # paired delta must be at least this negative.
+# Empirical noise floor at seeds=3 with paired-by-task comparison is ~0.01-0.02.
+# 0.03 filters most spurious wins without missing real 0.03+ improvements.
 HOLDOUT_REGRESSION_MAX = 0.03  # holdout loss must not be more than this worse than pre-change holdout.
 
 # Holdout is expensive (~20 min). Run it on accepted iters only, and only
@@ -168,7 +170,7 @@ async def run_researcher_turn(iter_n: int, baseline: dict, visible_tasks: list[s
     tasks_csv = ",".join(visible_tasks)
     eval_cmd = (
         f"python -m benchmarks.experiments.eval_current "
-        f"--tasks {tasks_csv} --seeds 2 --label iter{iter_n}_visible"
+        f"--tasks {tasks_csv} --seeds 3 --label iter{iter_n}_visible"
     )
 
     msg = (
@@ -219,11 +221,61 @@ def _load_latest_eval_for(label: str) -> dict | None:
         conn.close()
 
 
+def _paired_delta(baseline: dict, candidate_label: str, tasks: list[str]) -> dict:
+    """Compare candidate eval to baseline using per-task paired deltas.
+
+    For each task in `tasks`:
+        delta_t = mean(candidate_loss_t) - mean(baseline_loss_t)
+    Then corpus_delta = mean of delta_t across tasks.
+
+    Task-level means cancel out the (huge) variance from task difficulty,
+    so this number is MUCH more stable than (candidate_flat_mean - baseline_flat_mean).
+
+    Returns {
+        "corpus_delta": float,
+        "per_task": {task: {baseline_loss, new_loss, delta}},
+        "missing_in_candidate": [task_id,...],  # tasks with no candidate rows
+    }
+    """
+    baseline_per_task = (baseline or {}).get("per_task") or {}
+    conn = store_mod.connect()
+    try:
+        candidate_per_task = store_mod.per_task_losses(conn, candidate_label)
+    finally:
+        conn.close()
+
+    rows: dict[str, dict] = {}
+    deltas: list[float] = []
+    missing = []
+    for task_id in tasks:
+        b_row = baseline_per_task.get(task_id) or {}
+        c_row = candidate_per_task.get(task_id) or {}
+        b_loss = b_row.get("loss")
+        c_loss = c_row.get("mean_loss")
+        if b_loss is None or c_loss is None:
+            missing.append(task_id)
+            rows[task_id] = {"baseline_loss": b_loss, "new_loss": c_loss, "delta": None}
+            continue
+        d = c_loss - b_loss
+        deltas.append(d)
+        rows[task_id] = {"baseline_loss": round(b_loss, 4),
+                         "new_loss": round(c_loss, 4),
+                         "delta": round(d, 4),
+                         "n_candidate": c_row.get("n")}
+
+    return {
+        "corpus_delta": (sum(deltas) / len(deltas)) if deltas else None,
+        "per_task": rows,
+        "missing_in_candidate": missing,
+        "n_tasks_compared": len(deltas),
+    }
+
+
 async def _run_holdout(holdout_tasks: list[str]) -> dict[str, Any]:
     log.info(f"running holdout gate on {holdout_tasks}…")
     return await run_eval(
         tasks=holdout_tasks,
-        seeds=2,
+        seeds=3,
         label=f"holdout_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
         model="sonnet",
         skip_planner=False,
@@ -430,7 +482,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
     else:
         log.info(f"no usable stored baseline — running fresh on visible set {visible_tasks}…")
         baseline_eval = await run_eval(
-            tasks=visible_tasks, seeds=2, label="baseline",
+            tasks=visible_tasks, seeds=3, label="baseline",  # 3 seeds for variance control (see paired comparison)
             model="sonnet", skip_planner=False,
             time_budget=MAX_WALL_SECONDS, max_turns=40, parallel=DEFAULT_PARALLEL,
         )
@@ -490,13 +542,24 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
         new_loss = None
         ran_holdout_this_iter = False
 
-        if visible_summary and visible_summary.get("loss") is not None:
+        # Paired-by-task comparison: per-task delta, averaged. Much less
+        # noisy than raw corpus_loss comparison.
+        paired = _paired_delta(baseline_eval, visible_label, visible_tasks) if visible_summary else None
+
+        if visible_summary and paired and paired["corpus_delta"] is not None:
             new_loss = visible_summary["loss"]
-            if new_loss + IMPROVEMENT_EPSILON >= baseline_loss:
-                reason = f"no_improvement ({new_loss:.4f} vs {baseline_loss:.4f})"
+            corpus_delta = paired["corpus_delta"]
+            # Require full task coverage — if a task is missing a candidate run,
+            # we don't have enough data to trust the paired delta.
+            if paired["missing_in_candidate"]:
+                reason = (f"incomplete eval — missing tasks in candidate: "
+                          f"{paired['missing_in_candidate']}")
+            elif corpus_delta > -IMPROVEMENT_EPSILON:
+                reason = (f"no_improvement (paired Δ={corpus_delta:+.4f}, "
+                          f"need ≤ -{IMPROVEMENT_EPSILON})")
             elif skip_holdout:
                 accepted = True
-                reason = "improved, holdout skipped"
+                reason = f"improved paired Δ={corpus_delta:+.4f}, holdout skipped"
             else:
                 # Tentatively accept on visible; only fire holdout every Nth accept.
                 would_be_accepted_count = accepted_since_last_holdout + 1
@@ -512,12 +575,13 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
                                   f"{holdout_baseline['corpus_loss']:.4f} + {HOLDOUT_REGRESSION_MAX}")
                     else:
                         accepted = True
-                        reason = f"improved + holdout ok (after {would_be_accepted_count} accepted)"
+                        reason = (f"improved (paired Δ={corpus_delta:+.4f}) + holdout ok "
+                                  f"(after {would_be_accepted_count} accepted)")
                         holdout_baseline = holdout_new
                         accepted_since_last_holdout = 0
                 else:
                     accepted = True
-                    reason = (f"improved (visible-only; holdout due in "
+                    reason = (f"improved (paired Δ={corpus_delta:+.4f}; holdout due in "
                               f"{HOLDOUT_EVERY_N_ACCEPTED - would_be_accepted_count} more accepts)")
                     accepted_since_last_holdout = would_be_accepted_count
         else:
@@ -550,6 +614,8 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
             "reason": reason,
             "baseline_loss": baseline_loss,
             "new_loss": new_loss,
+            "paired_delta": (paired or {}).get("corpus_delta") if paired else None,
+            "paired_per_task": (paired or {}).get("per_task") if paired else None,
             "sha_before": current_sha,
             "wall_seconds": round(time.time() - iter_start, 1),
             "spent_usd": round(spent, 4),

@@ -151,6 +151,29 @@ def query_recent(conn: sqlite3.Connection, *, label: str | None = None,
     return cur.fetchall()
 
 
+def per_task_losses(conn: sqlite3.Connection, label: str) -> dict[str, dict]:
+    """Return {task_id: {n, mean_loss, mean_accuracy, ...}} for one label.
+
+    Used by the paired-by-task comparator in autoresearch — per-task
+    means cancel most of the shared task-level variance between baseline
+    and candidate runs, so deltas are far less noisy than comparing
+    flat corpus loss.
+    """
+    cur = conn.execute(
+        """SELECT task_id,
+                  COUNT(*) n,
+                  AVG(loss) mean_loss,
+                  AVG(accuracy) mean_accuracy,
+                  AVG(cost_cold_usd) mean_cost_cold_usd,
+                  AVG(wall_seconds) mean_wall_seconds
+             FROM runs
+            WHERE label = ?
+            GROUP BY task_id""",
+        (label,),
+    )
+    return {r["task_id"]: dict(r) for r in cur.fetchall()}
+
+
 def corpus_summary(conn: sqlite3.Connection, label: str) -> dict[str, Any]:
     """Aggregate metrics for a label — what the Researcher reads back."""
     cur = conn.execute(

@@ -380,9 +380,15 @@ async def run_headless(
     task_meta = yaml.safe_load((task_dir / "task.yaml").read_text())
     time_budget = time_budget_seconds or task_meta.get("time_budget_seconds", 600)
 
-    # Run dir
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = RUNS_ROOT / f"{stamp}_{task_id}"
+    # Run dir — microsecond precision + short random suffix so concurrent
+    # cells for the SAME task never collide on stamp-only paths. Previously
+    # two cells firing in the same second would share a run_dir, and the
+    # second one's writes would clobber the first — losing a cell's results
+    # at store-insertion time.
+    import uuid
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    suffix = uuid.uuid4().hex[:6]
+    run_dir = RUNS_ROOT / f"{stamp}_{task_id}_{suffix}"
     scripts_dir = run_dir / "scripts"
     candidate_dir = run_dir / "candidate"
     for d in (run_dir, scripts_dir, candidate_dir):
@@ -546,6 +552,7 @@ async def run_headless(
     result = {
         "task_id": task_id,
         "tier": task_meta.get("tier"),
+        "cost_budget_dollars": task_meta.get("cost_budget_dollars"),
         "run_dir": str(run_dir),
         "candidate": str(candidate_xlsx),
         "spec_generated": spec is not None,

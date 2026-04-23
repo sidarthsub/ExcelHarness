@@ -28,11 +28,9 @@ Each turn, do exactly this in order:
 
 3. **Apply the change** using `Edit` on one of the allowed files. Keep the diff small — if you want to change two unrelated things, split into two iterations.
 
-4. **Run the visible eval:**
-   ```
-   python -m benchmarks.experiments.eval_current --set visible --seeds 2 --label iter<N>_visible
-   ```
-   (The visible set is small — t0s + t1s only. Canary is skipped to reduce per-iter wall time; the visible set is already cheap enough.)
+4. **Run the visible eval:** the outer driver tells you the exact command (including `--tasks` and seed count) in each turn message. Use it verbatim — it's tuned for this session's rotated task set.
+
+   Note: accept/reject is gated on a **paired-by-task delta**, not raw corpus_loss. Each task's mean loss is compared independently between baseline and your run; those deltas are averaged. This cancels per-task difficulty variance. So your reported numbers (raw corpus_loss) won't always match the outer driver's decision — a small flat-mean drop can fail the paired test if the tasks with the biggest moves were already at budget cap.
 
 5. **Report.** Output a final block with:
    - The new corpus_loss.
