@@ -230,8 +230,10 @@ def _main() -> int:
     ap.add_argument("--time-budget", type=float, default=None,
                     help="Override every task's time_budget_seconds.")
     ap.add_argument("--max-turns", type=int, default=40)
-    ap.add_argument("--parallel", type=int, default=4,
-                    help="Concurrent runs. Verified safe up to 4 on macOS via benchmarks.experiments.parallelism_probe.")
+    ap.add_argument("--parallel", type=int, default=2,
+                    help="Concurrent runs. parallel=4 destabilizes hidden Excel under real workload "
+                         "(AppleScript timeouts + workbook-not-found errors). 2 is the verified-safe ceiling "
+                         "until we switch off ActiveWindow-based ops or batch xlwings commands.")
     ap.add_argument("--pretty", action="store_true")
     args = ap.parse_args()
 

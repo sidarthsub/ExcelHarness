@@ -203,7 +203,7 @@ async def _run_holdout() -> dict[str, Any]:
         skip_planner=False,
         time_budget=None,
         max_turns=40,
-        parallel=4,
+        parallel=2,
     )
 
 
@@ -252,7 +252,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
     baseline_eval = await run_eval(
         tasks=VISIBLE_SET, seeds=2, label="baseline",
         model="sonnet", skip_planner=False,
-        time_budget=None, max_turns=40, parallel=4,
+        time_budget=None, max_turns=40, parallel=2,
     )
     LAST_EVAL_PATH.write_text(json.dumps(baseline_eval, indent=2, default=str))
     baseline_loss = baseline_eval["corpus_loss"]

@@ -346,23 +346,30 @@ class XlwingsBackend:
         return {"ok": True}
 
     def freezeRows(self, sheet: str, count: int) -> dict:
+        # ActiveWindow requires the app to be foregrounded — ws.activate() raises
+        # "Could not activate App!" on hidden instances. For headless/parallel
+        # runs the freeze is cosmetic; swallow the error rather than crash.
         ws = self._sheet(sheet)
-        ws.activate()
         try:
+            ws.activate()
             self.app.api.ActiveWindow.SplitRow = int(count)
             self.app.api.ActiveWindow.FreezePanes = True
+            return {"ok": True}
         except Exception as e:
-            log.debug(f"freezeRows failed: {e}")
-        return {"ok": True}
+            log.debug(f"freezeRows skipped (hidden app): {e}")
+            return {"ok": True, "skipped": "hidden_app"}
 
     def setShowGridLines(self, sheet: str, show: bool) -> dict:
+        # Same caveat as freezeRows — DisplayGridlines is a window-level
+        # property, so needs an active window which hidden apps can't provide.
         ws = self._sheet(sheet)
-        ws.activate()
         try:
+            ws.activate()
             self.app.api.ActiveWindow.DisplayGridlines = bool(show)
+            return {"ok": True}
         except Exception as e:
-            log.debug(f"setShowGridLines failed: {e}")
-        return {"ok": True}
+            log.debug(f"setShowGridLines skipped (hidden app): {e}")
+            return {"ok": True, "skipped": "hidden_app"}
 
     def clearRange(self, sheet: str, address: str) -> dict:
         ws = self._sheet(sheet)
@@ -455,7 +462,11 @@ class _Handler(BaseHTTPRequestHandler):
             return {}
 
     def _send_json(self, payload: dict, status: int = 200) -> None:
-        data = json.dumps(payload).encode()
+        # xlwings occasionally returns datetime values from Excel cells
+        # (dates, serial-formatted timestamps). Fall back to str() for any
+        # type the default encoder can't handle — the Builder reads values
+        # as opaque data, so stringification is fine.
+        data = json.dumps(payload, default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
