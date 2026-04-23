@@ -48,17 +48,62 @@ log = logging.getLogger("eval_current")
 # comes via the holdout gate, which is the only place t2 tasks run during iteration.
 CANARY_SET = ["t0_npv", "t1_inputs_from_term_sheet"]
 
+# Default fixed sets — used when rotation isn't requested. Sized for fast
+# iteration: 2 tasks × 2 seeds = 4 cells per visible eval (~5-7 min at parallel=3).
 VISIBLE_SET = [
     "t0_npv",
-    "t0_option_pool_issuance",
     "t1_inputs_from_term_sheet",
 ]
 
 HOLDOUT_SET = [
     "t0_dcf_terminal_value",
-    "t1_revenue_build",
     "t2_lbo_mini",
 ]
+
+# Full pools for rotation. Task tiers are roughly balanced for speed: t0s
+# run in ~60s, t1s in ~180s, t2s in ~600s. Visible pool is all t0+t1 to
+# keep iteration walls bounded; holdout pool can include a t2 since it
+# fires rarely.
+VISIBLE_POOL = [
+    "t0_npv",
+    "t0_option_pool_issuance",
+    "t0_gross_up_post_money",
+    "t0_pro_rata_allocation",
+    "t0_runway_months",
+    "t0_safe_conversion_price",
+    "t0_waterfall_1x_nonpart",
+    "t0_working_capital_delta",
+    "t0ref_cap_table_fd_count",
+    "t0ref_historical_cagr",
+    "t0ref_term_sheet_to_price",
+    "t1_inputs_from_term_sheet",
+    "t1_debt_schedule",
+    "t1_returns_table",
+]
+
+HOLDOUT_POOL = [
+    "t0_dcf_terminal_value",
+    "t1_revenue_build",
+    "t2_lbo_mini",
+    "t2_cap_table_series_ab",
+    "t2_safe_convert_series_a",
+]
+
+
+def rotate_sets(seed: int | None, n_visible: int = 2, n_holdout: int = 2) -> tuple[list[str], list[str]]:
+    """Pick visible and holdout subsets from their pools.
+
+    Deterministic given `seed`. Visible and holdout are disjoint — a task
+    drawn for visible is excluded from the holdout pool so the Researcher
+    can't accidentally tune against a task that also appears in its
+    guardrail.
+    """
+    import random
+    rng = random.Random(seed if seed is not None else 0)
+    visible = rng.sample(VISIBLE_POOL, n_visible)
+    remaining_holdout = [t for t in HOLDOUT_POOL if t not in visible]
+    holdout = rng.sample(remaining_holdout, min(n_holdout, len(remaining_holdout)))
+    return visible, holdout
 
 
 def resolve_task_set(name: str | None, explicit: str | None) -> list[str]:

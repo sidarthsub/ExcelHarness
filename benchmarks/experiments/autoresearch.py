@@ -36,7 +36,7 @@ from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
 
 from benchmarks.experiments import store as store_mod
 from benchmarks.experiments.eval_current import (
-    HOLDOUT_SET, VISIBLE_SET, run_eval, resolve_task_set,
+    HOLDOUT_SET, VISIBLE_SET, run_eval, resolve_task_set, rotate_sets,
 )
 
 
@@ -119,7 +119,7 @@ def _commit_iteration(label: str, loss: float) -> str:
 # ---- Researcher agent driver ---------------------------------------------
 
 
-async def run_researcher_turn(iter_n: int, baseline: dict) -> str:
+async def run_researcher_turn(iter_n: int, baseline: dict, visible_tasks: list[str]) -> str:
     """Spawn the Researcher agent for one hypothesis. Returns its final text."""
     system_prompt = (AGENTS_DIR / "researcher.md").read_text()
 
@@ -162,17 +162,26 @@ async def run_researcher_turn(iter_n: int, baseline: dict) -> str:
         lines = HISTORY_PATH.read_text().splitlines()
         history_tail = "\n".join(lines[-20:])
 
+    tasks_csv = ",".join(visible_tasks)
+    eval_cmd = (
+        f"python -m benchmarks.experiments.eval_current "
+        f"--tasks {tasks_csv} --seeds 2 --label iter{iter_n}_visible"
+    )
+
     msg = (
         f"## Iteration {iter_n}\n\n"
         f"Current baseline corpus_loss: **{baseline['corpus_loss']:.4f}**\n"
         f"Per-task baseline:\n```json\n"
         f"{json.dumps(baseline.get('per_task', {}), indent=2)}\n```\n\n"
         f"Recent history (tail ~20):\n```\n{history_tail or '(empty)'}\n```\n\n"
-        f"Proposal file: `{PROPOSALS_DIR}/iter_{iter_n}.md`\n"
-        f"Labels: canary=`iter{iter_n}_canary`, visible=`iter{iter_n}_visible`\n\n"
-        f"Do one iteration now: form a hypothesis, edit, run canary, "
-        f"then (if non-regressive) run visible. Finish with your ACCEPT/REJECT "
-        f"recommendation."
+        f"Proposal file: `{PROPOSALS_DIR}/iter_{iter_n}.md` (write this BEFORE editing any code)\n"
+        f"\n"
+        f"**Visible tasks for this session:** {visible_tasks}\n"
+        f"**Eval command to run (exactly this):**\n"
+        f"```\n{eval_cmd}\n```\n"
+        f"\n"
+        f"Do one iteration now: write the proposal, apply ONE edit, run the eval "
+        f"command above, and finish with your ACCEPT/REJECT recommendation."
     )
 
     client = ClaudeSDKClient(options=opts)
@@ -207,10 +216,10 @@ def _load_latest_eval_for(label: str) -> dict | None:
         conn.close()
 
 
-async def _run_holdout() -> dict[str, Any]:
-    log.info("running holdout gate…")
+async def _run_holdout(holdout_tasks: list[str]) -> dict[str, Any]:
+    log.info(f"running holdout gate on {holdout_tasks}…")
     return await run_eval(
-        tasks=HOLDOUT_SET,
+        tasks=holdout_tasks,
         seeds=2,
         label=f"holdout_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
         model="sonnet",
@@ -319,7 +328,9 @@ def _write_status(**fields: Any) -> None:
 
 
 async def outer_loop(*, max_iters: int, max_dollars: float,
-                     skip_holdout: bool = False) -> None:
+                     skip_holdout: bool = False,
+                     rotate: bool = False,
+                     seed: int | None = None) -> None:
     PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
 
     if not _git_working_tree_clean():
@@ -328,19 +339,31 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
             "commit or stash first."
         )
 
+    # Pick the task sets for this session. Rotation is fixed-per-session:
+    # the Researcher sees the same visible set across every iter so its
+    # proposals are comparable; rotation only happens between sessions.
+    if rotate:
+        visible_tasks, holdout_tasks = rotate_sets(seed)
+        log.info(f"rotate=True seed={seed} — visible={visible_tasks} holdout={holdout_tasks}")
+    else:
+        visible_tasks, holdout_tasks = list(VISIBLE_SET), list(HOLDOUT_SET)
+        log.info(f"rotate=False — using fixed sets. visible={visible_tasks}")
+
     _write_status(phase="baseline", iter=0, started_at=datetime.now(timezone.utc).isoformat(),
-                  max_iters=max_iters, max_dollars=max_dollars)
+                  max_iters=max_iters, max_dollars=max_dollars,
+                  visible_tasks=visible_tasks, holdout_tasks=holdout_tasks,
+                  seed=seed)
 
     # Baseline: try to reuse existing store rows before spending on a fresh eval.
     # min_seeds=1 is intentional — trading a bit of noise for ~15min of re-eval time.
-    baseline_eval = _try_reuse_baseline("baseline", VISIBLE_SET, min_seeds=1)
+    baseline_eval = _try_reuse_baseline("baseline", visible_tasks, min_seeds=1)
     if baseline_eval is not None:
         log.info(f"reusing stored baseline — corpus_loss={baseline_eval['corpus_loss']:.4f} "
-                 f"(n={baseline_eval['n_runs']} over {len(VISIBLE_SET)} tasks)")
+                 f"(n={baseline_eval['n_runs']} over {len(visible_tasks)} tasks)")
     else:
-        log.info("no usable stored baseline — running fresh on visible set…")
+        log.info(f"no usable stored baseline — running fresh on visible set {visible_tasks}…")
         baseline_eval = await run_eval(
-            tasks=VISIBLE_SET, seeds=2, label="baseline",
+            tasks=visible_tasks, seeds=2, label="baseline",
             model="sonnet", skip_planner=False,
             time_budget=MAX_WALL_SECONDS, max_turns=40, parallel=DEFAULT_PARALLEL,
         )
@@ -352,13 +375,13 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
     holdout_baseline = None
     if not skip_holdout:
         _write_status(phase="holdout_baseline")
-        holdout_baseline = _try_reuse_baseline("holdout_", HOLDOUT_SET, min_seeds=1)
+        holdout_baseline = _try_reuse_baseline("holdout_", holdout_tasks, min_seeds=1)
         if holdout_baseline is not None:
             log.info(f"reusing stored holdout baseline — "
                      f"corpus_loss={holdout_baseline['corpus_loss']:.4f}")
         else:
-            log.info("no usable stored holdout — running fresh…")
-            holdout_baseline = await _run_holdout()
+            log.info(f"no usable stored holdout — running fresh on {holdout_tasks}…")
+            holdout_baseline = await _run_holdout(holdout_tasks)
         log.info(f"baseline holdout_loss = {holdout_baseline['corpus_loss']:.4f}")
 
     spent = (baseline_eval.get("eval_cost_usd") or 0.0) + \
@@ -384,7 +407,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
 
         verdict_text = ""
         try:
-            verdict_text = await run_researcher_turn(i, baseline_eval)
+            verdict_text = await run_researcher_turn(i, baseline_eval, visible_tasks)
         except Exception as e:
             log.warning(f"researcher turn crashed: {type(e).__name__}: {e}")
 
@@ -412,7 +435,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
                 would_be_accepted_count = accepted_since_last_holdout + 1
                 if would_be_accepted_count >= HOLDOUT_EVERY_N_ACCEPTED:
                     _write_status(phase="holdout_gate", iter=i)
-                    holdout_new = await _run_holdout()
+                    holdout_new = await _run_holdout(holdout_tasks)
                     ran_holdout_this_iter = True
                     spent += holdout_new.get("eval_cost_usd", 0.0) or 0.0
                     if (holdout_new["corpus_loss"]
@@ -452,7 +475,6 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
 
         # Track costs from this iter's evals.
         spent += (visible_summary or {}).get("cost_actual", 0.0) or 0.0
-        spent += (canary_summary or {}).get("cost_actual", 0.0) or 0.0
 
         _append_history({
             "iter": i,
@@ -490,11 +512,20 @@ def _main() -> int:
     ap.add_argument("--max-dollars", type=float, default=50.0)
     ap.add_argument("--skip-holdout", action="store_true",
                     help="Skip the holdout gate. Only for debugging the loop itself.")
+    ap.add_argument("--rotate", action="store_true",
+                    help="Rotate in fresh visible + holdout subsets from the pool "
+                         "(eval_current.VISIBLE_POOL / HOLDOUT_POOL). Deterministic given --seed. "
+                         "Sets stay fixed within a session so iter-to-iter comparisons remain valid.")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="Seed for --rotate. Default: wall-clock time so each run sees new tasks.")
     args = ap.parse_args()
+    seed = args.seed if args.seed is not None else int(time.time())
     asyncio.run(outer_loop(
         max_iters=args.max_iters,
         max_dollars=args.max_dollars,
         skip_holdout=args.skip_holdout,
+        rotate=args.rotate,
+        seed=seed,
     ))
     return 0
 
