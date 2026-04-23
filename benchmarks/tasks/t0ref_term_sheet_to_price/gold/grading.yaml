@@ -1,0 +1,64 @@
+recalc: true
+checks:
+  - id: calc_sheet_exists
+    type: sheet_exists
+    sheet: Calc
+    weight: 0.3
+
+  # --- extracted inputs (literals expected) ---
+  - id: pre_money
+    type: output_key
+    key: pre_money
+    expected: 50000000
+    tolerance_rel: 1.0e-6
+    weight: 0.5
+  - id: round_size
+    type: output_key
+    key: round_size
+    expected: 10000000
+    tolerance_rel: 1.0e-6
+    weight: 0.5
+  - id: pre_fd
+    type: output_key
+    key: pre_fd
+    expected: 5000000
+    tolerance_rel: 1.0e-6
+    weight: 0.5
+
+  # --- derived values (must be formula-driven) ---
+  - id: post_money
+    type: output_key
+    key: post_money
+    expected: 60000000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.0
+  - id: share_price
+    type: output_key
+    key: share_price
+    expected: 10.0
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+  - id: new_investor_shares
+    type: output_key
+    key: new_investor_shares
+    expected: 1000000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.0
+  - id: post_fd
+    type: output_key
+    key: post_fd
+    expected: 6000000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.0
+  - id: starlight_pct_post
+    type: output_key
+    key: starlight_pct_post
+    expected: 0.16666666666666666
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.2
+    description: "Headline metric — Starlight's post-round ownership fraction."

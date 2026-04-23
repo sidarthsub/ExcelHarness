@@ -1,0 +1,31 @@
+id: t2_lbo_mini
+tier: 2
+time_budget_seconds: 1200
+cost_budget_dollars: 4.00
+tags: [lbo, debt, cash_sweep, returns, multi_sheet, reference_formatting]
+reference_files:
+  - inputs/deal_terms.md
+  - inputs/model_format.md
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 5
+  max_questions: 10
+
+output_keys:
+  # Sources & Uses
+  - {key: total_uses, type: formula, description: "Total uses = purchase + fees"}
+  - {key: total_sources, type: formula, description: "Total sources = TLB + Mezz + Equity"}
+  - {key: sponsor_initial_equity, type: formula, description: "Sponsor equity contribution (plug)"}
+
+  # Operating Model
+  - {key: y1_ebitda, type: formula, description: "Year 1 EBITDA"}
+  - {key: y5_ebitda, type: formula, description: "Year 5 EBITDA"}
+  - {key: y5_fcf, type: formula, description: "Year 5 free cash flow (after interest + tax)"}
+  - {key: tlb_y5_end_balance, type: formula, description: "TLB outstanding at end of Year 5"}
+
+  # Returns
+  - {key: exit_ev, type: formula, description: "Exit enterprise value = exit multiple × Y5 EBITDA"}
+  - {key: net_debt_at_exit, type: formula, description: "Net debt at exit = TLB_Y5 + Mezz"}
+  - {key: exit_equity_value, type: formula, description: "Sponsor exit proceeds = exit EV − net debt"}
+  - {key: sponsor_moic, type: formula, description: "Sponsor MOIC = exit equity / initial equity"}
+  - {key: sponsor_irr, type: formula, description: "Sponsor IRR over 5-year hold"}

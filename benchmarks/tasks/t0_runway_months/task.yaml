@@ -1,0 +1,17 @@
+id: t0_runway_months
+tier: 0
+time_budget_seconds: 30
+cost_budget_dollars: 0.10
+tags: [cash, runway, atomic_formula]
+reference_files: []
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 2
+  max_questions: 3
+
+# Builder emits results.json mapping these keys -> "Sheet!Cell" addresses.
+# The grader dereferences each cell and compares to expected values.
+output_keys:
+  - {key: cash_end_phase_1, type: formula, description: "Cash remaining after the first 6 months of low burn"}
+  - {key: phase_2_runway, type: formula, description: "Months of runway at the stepped-up burn, given remaining cash"}
+  - {key: total_runway_months, type: formula, description: "Total runway in months = phase 1 length + phase 2 runway"}

@@ -1,0 +1,11 @@
+- id: gordon_formula
+  matches: ["gordon", "terminal value formula", "tv formula", "base fcf", "which fcf"]
+  answer: "TV = FCF x (1+g)/(WACC-g) using Y5 FCF as base."
+
+- id: discounting_convention
+  matches: ["discounting", "end of period", "mid year", "discount factor", "convention"]
+  answer: "End-of-period; factor = 1/(1+WACC)^horizon."
+
+- id: tv_timing
+  matches: ["timing", "as of", "when is tv", "pv of tv", "pull back"]
+  answer: "TV is as-of end of Y5; PV pulls back to today via the Y5 factor."

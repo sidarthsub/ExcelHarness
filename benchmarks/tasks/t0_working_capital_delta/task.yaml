@@ -1,0 +1,22 @@
+id: t0_working_capital_delta
+tier: 0
+time_budget_seconds: 30
+cost_budget_dollars: 0.10
+tags: [working_capital, dso, dpo, dio, atomic_formula]
+reference_files: []
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 2
+  max_questions: 3
+
+output_keys:
+  - {key: ar_y0, type: formula, description: "Accounts receivable Y0 = Rev_Y0 × DSO / 365"}
+  - {key: ar_y1, type: formula, description: "Accounts receivable Y1 = Rev_Y1 × DSO / 365"}
+  - {key: delta_ar, type: formula, description: "ΔAR = AR_Y1 − AR_Y0"}
+  - {key: ap_y0, type: formula, description: "Accounts payable Y0 = COGS_Y0 × DPO / 365"}
+  - {key: ap_y1, type: formula, description: "Accounts payable Y1 = COGS_Y1 × DPO / 365"}
+  - {key: delta_ap, type: formula, description: "ΔAP = AP_Y1 − AP_Y0"}
+  - {key: inv_y0, type: formula, description: "Inventory Y0 = COGS_Y0 × DIO / 365"}
+  - {key: inv_y1, type: formula, description: "Inventory Y1 = COGS_Y1 × DIO / 365"}
+  - {key: delta_inv, type: formula, description: "ΔInv = Inv_Y1 − Inv_Y0"}
+  - {key: net_wc_cash_impact, type: formula, description: "Net WC cash impact = −ΔAR + ΔAP − ΔInv (source-positive)"}

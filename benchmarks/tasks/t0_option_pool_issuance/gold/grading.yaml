@@ -1,0 +1,24 @@
+recalc: true
+checks:
+  - id: answer_cell_numeric
+    type: numeric
+    sheet: Calc
+    cell: B10
+    expected: 833333.3333333334
+    tolerance_rel: 1e-4
+    weight: 1.0
+    description: "New option pool shares to issue under pre-money inclusion."
+
+  - id: answer_is_formula
+    type: formula_driven
+    sheet: Calc
+    cell: B10
+    weight: 0.3
+    description: "Answer must be a formula, not a literal."
+
+  - id: no_hardcoded_pre_fd
+    type: hardcode_penalty
+    sheet: Calc
+    source_cell: "inputs/pre_cap_table.xlsx!Cap Table!C8"
+    weight: -0.2
+    description: "Penalize if the total FD from the source cap table is pasted as a literal."

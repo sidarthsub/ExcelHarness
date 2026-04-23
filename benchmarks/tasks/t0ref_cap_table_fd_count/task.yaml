@@ -1,0 +1,14 @@
+id: t0ref_cap_table_fd_count
+tier: 0
+time_budget_seconds: 60
+cost_budget_dollars: 0.20
+tags: [cap_table, fully_diluted, reference_reading, atomic_formula]
+reference_files:
+  - inputs/messy_cap_table.xlsx
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 2
+  max_questions: 3
+
+output_keys:
+  - {key: total_fd, type: formula, description: "Total fully diluted shares summed from all rows of the Cap Table sheet"}

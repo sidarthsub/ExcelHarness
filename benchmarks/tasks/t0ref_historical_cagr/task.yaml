@@ -1,0 +1,18 @@
+id: t0ref_historical_cagr
+tier: 0
+time_budget_seconds: 60
+cost_budget_dollars: 0.20
+tags: [cagr, historical, reference_reading, atomic_formula]
+reference_files:
+  - inputs/historical_revenue.xlsx
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 2
+  max_questions: 3
+
+output_keys:
+  - {key: start_revenue, type: formula, description: "2022 revenue — reference the Revenue sheet, don't hardcode"}
+  - {key: end_revenue, type: formula, description: "2025 revenue from the reference"}
+  - {key: cagr_3yr, type: formula, description: "3-year CAGR ending 2025"}
+  - {key: cagr_4yr, type: formula, description: "4-year CAGR over 2021→2025"}
+  - {key: growth_multiple, type: formula, description: "Total growth multiple 2021→2025"}

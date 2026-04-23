@@ -1,0 +1,14 @@
+{
+  "total_uses": "Sources and Uses!B12",
+  "total_sources": "Sources and Uses!B7",
+  "sponsor_initial_equity": "Sources and Uses!B6",
+  "y1_ebitda": "Operating Model!B4",
+  "y5_ebitda": "Operating Model!F4",
+  "y5_fcf": "Operating Model!F14",
+  "tlb_y5_end_balance": "Operating Model!F17",
+  "exit_ev": "Returns!B8",
+  "net_debt_at_exit": "Returns!B11",
+  "exit_equity_value": "Returns!B12",
+  "sponsor_moic": "Returns!B14",
+  "sponsor_irr": "Returns!B15"
+}

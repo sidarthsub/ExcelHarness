@@ -1,0 +1,11 @@
+- id: dilution_basis
+  matches: ["who absorbs", "dilution basis", "pre-money inclusion", "who is diluted"]
+  answer: "Pre-money inclusion — only existing shareholders absorb the pool dilution."
+
+- id: unallocated_treatment
+  matches: ["existing unallocated", "net or gross", "top-up vs reset", "count existing"]
+  answer: "Net top-up — existing unallocated counts toward the target pool %."
+
+- id: rounding
+  matches: ["round", "integer", "fractional shares"]
+  answer: "Do not round. Fractional shares are acceptable for this calc."

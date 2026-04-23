@@ -1,0 +1,39 @@
+- id: forecast_horizon
+  matches: ["how many years", "forecast horizon", "how many forecast periods"]
+  answer: "3 forecast years (2027-2029) plus 2026 historical as the baseline period."
+
+- id: tax_on_losses
+  matches: ["tax on losses", "loss carryforward", "negative pre-tax"]
+  answer: "Tax = 25% × MAX(0, pre-tax). No benefit on losses, no carry-forward."
+
+- id: ar_ap_formula
+  matches: ["working capital", "a/r formula", "a/p formula", "dso", "dpo"]
+  answer: "A/R = Revenue × 30/365; A/P = COGS × 45/365."
+
+- id: re_plug_2026
+  matches: ["retained earnings 2026", "re opening", "opening retained"]
+  answer: "2026 RE is the plug that balances the historical BS. In forecast years, RE rolls with net income."
+
+- id: debt_activity
+  matches: ["debt roll", "debt amortization", "new debt"]
+  answer: "Debt is flat at $10M. No amortization, no new draws."
+
+- id: cf_method
+  matches: ["cash flow method", "direct vs indirect", "cash flow format"]
+  answer: "Indirect: NI + D&A − ΔA/R + ΔA/P = CF ops. CF inv = −CapEx. CF fin = 0."
+
+- id: sheet_names
+  matches: ["sheet name", "what should the sheets be called"]
+  answer: "Exactly: Inputs, Income Statement, Balance Sheet, Cash Flow."
+
+- id: historical_year_cf
+  matches: ["cash flow 2026", "historical cash flow", "cf for history"]
+  answer: "Leave 2026 CF operating movements at zero — no prior-year delta to compute. Just show NI + D&A for completeness."
+
+- id: column_order
+  matches: ["year order", "column order", "which column first"]
+  answer: "2026 in column B, 2027 in C, 2028 in D, 2029 in E. Historical leftmost, forecast right."
+
+- id: bs_balance_check
+  matches: ["balance sheet check", "does it need to balance", "parity"]
+  answer: "Yes, BS must balance every period: Total assets = Total L+E. This is non-negotiable."

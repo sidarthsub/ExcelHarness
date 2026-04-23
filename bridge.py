@@ -5,6 +5,8 @@ one function per bridge command, no convention encoding, no helpers.
 """
 from __future__ import annotations
 
+import os
+
 import requests
 import urllib3
 
@@ -79,7 +81,19 @@ def _thaw(obj):
 
 
 class Bridge:
-    def __init__(self, base_url: str = "https://localhost:3000", verify_tls: bool = True, timeout: float = 60.0):
+    def __init__(self, base_url: str | None = None, verify_tls: bool | None = None, timeout: float = 60.0):
+        # BRIDGE_URL env overrides default when the caller doesn't pass one.
+        # Lets the benchmark harness swap in the pseudo-bridge (plain HTTP on
+        # a local port) without touching Builder-authored scripts.
+        if base_url is None:
+            base_url = os.environ.get("BRIDGE_URL", "https://localhost:3000")
+        if verify_tls is None:
+            env_verify = os.environ.get("BRIDGE_VERIFY_TLS")
+            if env_verify is not None:
+                verify_tls = env_verify.lower() not in ("0", "false", "no")
+            else:
+                # Default: verify TLS for https, skip for http (local pseudo-bridge).
+                verify_tls = base_url.lower().startswith("https")
         self.base_url = base_url.rstrip("/")
         self.verify = verify_tls
         self.timeout = timeout

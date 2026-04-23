@@ -1,0 +1,20 @@
+recalc: true
+checks:
+  # --- sheet presence ---
+  - id: calc_sheet_exists
+    type: sheet_exists
+    sheet: Calc
+    weight: 0.3
+  - id: cap_table_sheet_imported
+    type: sheet_exists
+    sheet: Cap Table
+    weight: 0.3
+
+  # --- total FD output ---
+  - id: total_fd
+    type: output_key
+    key: total_fd
+    expected: 12000000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.5

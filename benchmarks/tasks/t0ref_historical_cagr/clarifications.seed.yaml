@@ -1,0 +1,11 @@
+- id: cagr_window
+  matches: ["3-year window", "cagr window", "start year", "end year", "which years", "periods"]
+  answer: "3-year CAGR ending 2025 uses start=2022 end=2025 (3 periods)."
+
+- id: cagr_formula
+  matches: ["cagr formula", "how to compute", "geometric", "formula for cagr"]
+  answer: "(end/start)^(1/n) - 1"
+
+- id: reference_vs_hardcode
+  matches: ["hardcode", "reference", "link", "import revenue", "copy values"]
+  answer: "Reference the imported Revenue sheet — don't hardcode revenue values."

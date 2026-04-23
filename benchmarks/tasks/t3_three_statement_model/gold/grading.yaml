@@ -1,0 +1,448 @@
+recalc: true
+checks:
+- id: sheet_inputs
+  type: sheet_exists
+  sheet: Inputs
+  weight: 0.5
+- id: sheet_income_statement
+  type: sheet_exists
+  sheet: Income Statement
+  weight: 0.5
+- id: sheet_balance_sheet
+  type: sheet_exists
+  sheet: Balance Sheet
+  weight: 0.5
+- id: sheet_cash_flow
+  type: sheet_exists
+  sheet: Cash Flow
+  weight: 0.5
+- id: is_revenue_2027
+  type: numeric
+  sheet: Income Statement
+  cell: C4
+  expected: 14000000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_revenue_2028
+  type: numeric
+  sheet: Income Statement
+  cell: D4
+  expected: 18900000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_revenue_2029
+  type: numeric
+  sheet: Income Statement
+  cell: E4
+  expected: 24570000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_cogs_2027
+  type: numeric
+  sheet: Income Statement
+  cell: C5
+  expected: 4200000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_cogs_2028
+  type: numeric
+  sheet: Income Statement
+  cell: D5
+  expected: 5670000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_cogs_2029
+  type: numeric
+  sheet: Income Statement
+  cell: E5
+  expected: 7371000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_gross_2027
+  type: numeric
+  sheet: Income Statement
+  cell: C6
+  expected: 9800000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_gross_2028
+  type: numeric
+  sheet: Income Statement
+  cell: D6
+  expected: 13230000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_gross_2029
+  type: numeric
+  sheet: Income Statement
+  cell: E6
+  expected: 17199000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_opex_2027
+  type: numeric
+  sheet: Income Statement
+  cell: C7
+  expected: 7700000.000000001
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_opex_2028
+  type: numeric
+  sheet: Income Statement
+  cell: D7
+  expected: 9450000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_opex_2029
+  type: numeric
+  sheet: Income Statement
+  cell: E7
+  expected: 11056500.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_ebitda_2027
+  type: numeric
+  sheet: Income Statement
+  cell: C8
+  expected: 2099999.999999999
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_ebitda_2028
+  type: numeric
+  sheet: Income Statement
+  cell: D8
+  expected: 3780000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_ebitda_2029
+  type: numeric
+  sheet: Income Statement
+  cell: E8
+  expected: 6142500.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_ebit_2027
+  type: numeric
+  sheet: Income Statement
+  cell: C10
+  expected: 1099999.999999999
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_ebit_2028
+  type: numeric
+  sheet: Income Statement
+  cell: D10
+  expected: 2780000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_ebit_2029
+  type: numeric
+  sheet: Income Statement
+  cell: E10
+  expected: 5142500.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_pretax_2027
+  type: numeric
+  sheet: Income Statement
+  cell: C12
+  expected: 499999.99999999907
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_pretax_2028
+  type: numeric
+  sheet: Income Statement
+  cell: D12
+  expected: 2180000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_pretax_2029
+  type: numeric
+  sheet: Income Statement
+  cell: E12
+  expected: 4542500.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_ni_2027
+  type: numeric
+  sheet: Income Statement
+  cell: C14
+  expected: 374999.9999999993
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_ni_2028
+  type: numeric
+  sheet: Income Statement
+  cell: D14
+  expected: 1635000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: is_ni_2029
+  type: numeric
+  sheet: Income Statement
+  cell: E14
+  expected: 3406875.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_cash_2027
+  type: numeric
+  sheet: Balance Sheet
+  cell: C4
+  expected: 14194178.08219178
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_cash_2028
+  type: numeric
+  sheet: Balance Sheet
+  cell: D4
+  expected: 14607671.23287671
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_cash_2029
+  type: numeric
+  sheet: Balance Sheet
+  cell: E4
+  expected: 16758231.16438356
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_ar_2027
+  type: numeric
+  sheet: Balance Sheet
+  cell: C5
+  expected: 1150684.9315068494
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_ar_2028
+  type: numeric
+  sheet: Balance Sheet
+  cell: D5
+  expected: 1553424.6575342466
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_ar_2029
+  type: numeric
+  sheet: Balance Sheet
+  cell: E5
+  expected: 2019452.0547945206
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_ppe_2027
+  type: numeric
+  sheet: Balance Sheet
+  cell: C6
+  expected: 6000000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_ppe_2028
+  type: numeric
+  sheet: Balance Sheet
+  cell: D6
+  expected: 7000000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_ppe_2029
+  type: numeric
+  sheet: Balance Sheet
+  cell: E6
+  expected: 8000000.0
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_total_assets_2027
+  type: numeric
+  sheet: Balance Sheet
+  cell: C7
+  expected: 21344863.01369863
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_total_assets_2028
+  type: numeric
+  sheet: Balance Sheet
+  cell: D7
+  expected: 23161095.89041096
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_total_assets_2029
+  type: numeric
+  sheet: Balance Sheet
+  cell: E7
+  expected: 26777683.21917808
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_ap_2027
+  type: numeric
+  sheet: Balance Sheet
+  cell: C9
+  expected: 517808.2191780822
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_ap_2028
+  type: numeric
+  sheet: Balance Sheet
+  cell: D9
+  expected: 699041.095890411
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_ap_2029
+  type: numeric
+  sheet: Balance Sheet
+  cell: E9
+  expected: 908753.4246575342
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_re_2027
+  type: numeric
+  sheet: Balance Sheet
+  cell: C12
+  expected: 2827054.7945205485
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_re_2028
+  type: numeric
+  sheet: Balance Sheet
+  cell: D12
+  expected: 4462054.794520549
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_re_2029
+  type: numeric
+  sheet: Balance Sheet
+  cell: E12
+  expected: 7868929.794520549
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_total_le_2027
+  type: numeric
+  sheet: Balance Sheet
+  cell: C13
+  expected: 21344863.01369863
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_total_le_2028
+  type: numeric
+  sheet: Balance Sheet
+  cell: D13
+  expected: 23161095.89041096
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: bs_total_le_2029
+  type: numeric
+  sheet: Balance Sheet
+  cell: E13
+  expected: 26777683.219178084
+  tolerance_rel: 0.0001
+  weight: 0.5
+- id: cf_ops_2027
+  type: numeric
+  sheet: Cash Flow
+  cell: C8
+  expected: 1194178.0821917802
+  tolerance_rel: 0.0001
+  weight: 0.75
+- id: cf_ending_cash_2027
+  type: numeric
+  sheet: Cash Flow
+  cell: C13
+  expected: 14194178.08219178
+  tolerance_rel: 0.0001
+  weight: 1.0
+- id: cf_ops_2028
+  type: numeric
+  sheet: Cash Flow
+  cell: D8
+  expected: 2413493.1506849313
+  tolerance_rel: 0.0001
+  weight: 0.75
+- id: cf_ending_cash_2028
+  type: numeric
+  sheet: Cash Flow
+  cell: D13
+  expected: 14607671.23287671
+  tolerance_rel: 0.0001
+  weight: 1.0
+- id: cf_ops_2029
+  type: numeric
+  sheet: Cash Flow
+  cell: E8
+  expected: 4150559.9315068494
+  tolerance_rel: 0.0001
+  weight: 0.75
+- id: cf_ending_cash_2029
+  type: numeric
+  sheet: Cash Flow
+  cell: E13
+  expected: 16758231.16438356
+  tolerance_rel: 0.0001
+  weight: 1.0
+- id: bs_balances
+  type: bs_balances
+  sheet: Balance Sheet
+  assets_row: 7
+  liab_equity_row: 13
+  columns:
+  - B
+  - C
+  - D
+  - E
+  tolerance_abs: 1.0
+  tolerance_rel: 0.0001
+  weight: 3.0
+- id: is_revenue_is_formula_2027
+  type: formula_driven
+  sheet: Income Statement
+  cell: C4
+  weight: 0.2
+- id: bs_cash_is_formula_2027
+  type: formula_driven
+  sheet: Balance Sheet
+  cell: C4
+  weight: 0.2
+- id: bs_re_is_formula_2027
+  type: formula_driven
+  sheet: Balance Sheet
+  cell: C12
+  weight: 0.2
+- id: cf_ending_cash_is_formula_2027
+  type: formula_driven
+  sheet: Cash Flow
+  cell: C13
+  weight: 0.2
+- id: is_revenue_is_formula_2028
+  type: formula_driven
+  sheet: Income Statement
+  cell: D4
+  weight: 0.2
+- id: bs_cash_is_formula_2028
+  type: formula_driven
+  sheet: Balance Sheet
+  cell: D4
+  weight: 0.2
+- id: bs_re_is_formula_2028
+  type: formula_driven
+  sheet: Balance Sheet
+  cell: D12
+  weight: 0.2
+- id: cf_ending_cash_is_formula_2028
+  type: formula_driven
+  sheet: Cash Flow
+  cell: D13
+  weight: 0.2
+- id: is_revenue_is_formula_2029
+  type: formula_driven
+  sheet: Income Statement
+  cell: E4
+  weight: 0.2
+- id: bs_cash_is_formula_2029
+  type: formula_driven
+  sheet: Balance Sheet
+  cell: E4
+  weight: 0.2
+- id: bs_re_is_formula_2029
+  type: formula_driven
+  sheet: Balance Sheet
+  cell: E12
+  weight: 0.2
+- id: cf_ending_cash_is_formula_2029
+  type: formula_driven
+  sheet: Cash Flow
+  cell: E13
+  weight: 0.2

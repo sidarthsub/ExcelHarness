@@ -1,0 +1,23 @@
+- id: series_a_pricing
+  matches: ["series a price", "series a pricing", "price formula a"]
+  answer: "price = pre_money / pre_FD (simple, non-circular)."
+
+- id: series_b_denominator
+  matches: ["series b denominator", "series b price", "pre-b fd", "post-a fd as denominator"]
+  answer: "price = pre_B_money / post_A_FD (uses Series A's post-money FD)."
+
+- id: pool_topup_rule
+  matches: ["option pool", "pool top-up", "pool formula", "pool inclusion"]
+  answer: "10% post-B, pre-money inclusion, net of pre-round unallocated. Solve (unalloc + topup) = 10% * (pre_B_FD + new_inv_B + topup)."
+
+- id: cross_sheet_refs
+  matches: ["cross-sheet", "reference other sheet", "link sheets"]
+  answer: "Series A reads Cap Table; Series B reads Series A. Don't copy numbers — reference."
+
+- id: cap_table_copy
+  matches: ["cap table copy", "copy cap table", "reproduce cap table"]
+  answer: "Copy the 6 holder rows from the input into the Cap Table sheet (or use bridge.copy_sheet_from_input)."
+
+- id: pool_at_series_a
+  matches: ["pool at series a", "option pool series a", "series a pool change"]
+  answer: "None — no expansion in this round."

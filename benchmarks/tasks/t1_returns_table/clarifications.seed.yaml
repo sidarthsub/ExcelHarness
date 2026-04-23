@@ -1,0 +1,19 @@
+- id: payout_method
+  matches: ["waterfall", "preference", "pro-rata", "pro rata", "liquidation"]
+  answer: "Pure pro-rata on fully diluted (no liquidation preferences)."
+
+- id: cap_table_source
+  matches: ["cap table source", "where are shares", "import cap table", "reference cap table"]
+  answer: "Use inputs/cap_table.xlsx — import it into the workbook or reference it via formulas. Do not hardcode share counts."
+
+- id: style_adherence
+  matches: ["style", "formatting", "layout", "number format"]
+  answer: "Follow inputs/style_guide.md for headers, formats, and layout."
+
+- id: exit_scenarios
+  matches: ["exit", "valuation", "scenarios", "which valuations"]
+  answer: "Exactly 5 exits: $100M, $250M, $500M, $1B, $2B."
+
+- id: sheet_name
+  matches: ["sheet name", "what to call the sheet", "name the sheet"]
+  answer: "Name it exactly 'Returns Analysis' — no prefix, no suffix."

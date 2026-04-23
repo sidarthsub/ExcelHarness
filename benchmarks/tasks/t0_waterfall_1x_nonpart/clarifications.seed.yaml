@@ -1,0 +1,11 @@
+- id: waterfall_choice
+  matches: ["max or min", "pref vs convert", "which path", "waterfall choice", "non-participating"]
+  answer: "LP takes MAX(preference, conversion) — whichever gives them more."
+
+- id: non_participating
+  matches: ["participating", "double-dip", "both pref and convert", "common residual"]
+  answer: "LP chooses one or the other, not both. Common gets the residual of exit after LP."
+
+- id: rounding
+  matches: ["round", "integer", "fractional dollars", "precision"]
+  answer: "Don't round."

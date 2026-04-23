@@ -1,0 +1,19 @@
+id: t0_gross_up_post_money
+tier: 0
+time_budget_seconds: 30
+cost_budget_dollars: 0.10
+tags: [cap_table, gross_up, atomic_formula]
+reference_files: []
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 2
+  max_questions: 3
+
+# Builder emits results.json mapping these keys -> "Sheet!Cell" addresses.
+# The grader dereferences each cell and compares to expected values.
+output_keys:
+  - {key: target_post_fd, type: formula, description: "Total post-round FD = holder_shares / target_pct"}
+  - {key: new_shares_issued, type: formula, description: "New investor shares = target_post_fd − pre_fd"}
+  - {key: share_price, type: formula, description: "Share price = round_size / new_shares"}
+  - {key: pre_money, type: formula, description: "Pre-money = pre_fd × share_price"}
+  - {key: holder_pct_check, type: formula, description: "Sanity: holder % post (= target)"}

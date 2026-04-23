@@ -1,0 +1,33 @@
+recalc: true
+checks:
+  - id: calc_sheet_exists
+    type: sheet_exists
+    sheet: Calc
+    weight: 0.3
+
+  - id: cash_end_phase_1_value
+    type: output_key
+    key: cash_end_phase_1
+    expected: 14000000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.7
+    description: "Cash remaining after phase 1 must match and be formula-driven."
+
+  - id: phase_2_runway_value
+    type: output_key
+    key: phase_2_runway
+    expected: 9.333333333333334
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.8
+    description: "Phase 2 months of runway must match and be formula-driven."
+
+  - id: total_runway_months_value
+    type: output_key
+    key: total_runway_months
+    expected: 15.333333333333334
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.2
+    description: "Total runway (headline answer) must match and be formula-driven."

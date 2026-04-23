@@ -1,0 +1,11 @@
+- id: npv_convention
+  matches: ["npv convention", "excludes y0", "include year 0", "npv function", "y0 handling"]
+  answer: "Excel's NPV excludes Y0 — add Y0 to NPV(rate, Y1:Y5)."
+
+- id: rate_format
+  matches: ["rate format", "decimal", "percent", "10%", "0.10"]
+  answer: "Decimal (e.g., 0.10 for 10%)."
+
+- id: rounding
+  matches: ["round", "integer", "precision"]
+  answer: "Don't round."

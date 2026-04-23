@@ -1,0 +1,12 @@
+id: t3_three_statement_model
+tier: 3
+time_budget_seconds: 1800
+cost_budget_dollars: 8.00
+tags: [three_statement, saas, accounting, bs_balances, integrated_model]
+reference_files:
+  - inputs/drivers.md
+  - inputs/historical.md
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 5
+  max_questions: 10

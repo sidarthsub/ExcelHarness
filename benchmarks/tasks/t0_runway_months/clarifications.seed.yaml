@@ -1,0 +1,11 @@
+- id: rounding
+  matches: ["round", "integer", "floor", "fractional months", "whole months"]
+  answer: "Fractional months are fine; don't round or floor."
+
+- id: revenue
+  matches: ["revenue", "income", "inflows", "offset"]
+  answer: "Pure burn analysis — no revenue assumed."
+
+- id: phase_transition
+  matches: ["phase transition", "when does burn jump", "month 6 vs month 7", "phase 1 length", "inclusive"]
+  answer: "Burn jumps from B4 to B5 strictly after month B6; phase 1 is exactly B6 months at the lower burn."

@@ -1,0 +1,12 @@
+{
+  "ar_y0": "Calc!B11",
+  "ar_y1": "Calc!B12",
+  "delta_ar": "Calc!B13",
+  "ap_y0": "Calc!B14",
+  "ap_y1": "Calc!B15",
+  "delta_ap": "Calc!B16",
+  "inv_y0": "Calc!B17",
+  "inv_y1": "Calc!B18",
+  "delta_inv": "Calc!B19",
+  "net_wc_cash_impact": "Calc!B20"
+}

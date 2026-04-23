@@ -3,6 +3,14 @@ runs/
 models/*.xlsx
 !models/.gitkeep
 
+# Benchmark ephemera (regenerable per run / per loop)
+benchmarks/runs/
+benchmarks/cache/
+benchmarks/experiments/runs.sqlite
+benchmarks/experiments/status.json
+benchmarks/experiments/history.jsonl
+benchmarks/experiments/proposals/
+
 # Secrets
 .env
 

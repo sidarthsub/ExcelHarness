@@ -1,0 +1,105 @@
+recalc: true
+checks:
+  # --- sheet presence (3) ---
+  - id: sources_uses_sheet
+    type: sheet_exists
+    sheet: Sources and Uses
+    weight: 0.5
+  - id: operating_model_sheet
+    type: sheet_exists
+    sheet: Operating Model
+    weight: 0.5
+  - id: returns_sheet
+    type: sheet_exists
+    sheet: Returns
+    weight: 0.5
+
+  # --- Sources & Uses ---
+  - id: total_uses
+    type: output_key
+    key: total_uses
+    expected: 510000000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+  - id: total_sources
+    type: output_key
+    key: total_sources
+    expected: 510000000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+  - id: sponsor_initial_equity
+    type: output_key
+    key: sponsor_initial_equity
+    expected: 210000000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+
+  # --- Operating Model ---
+  - id: y1_ebitda
+    type: output_key
+    key: y1_ebitda
+    expected: 54000000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+  - id: y5_ebitda
+    type: output_key
+    key: y5_ebitda
+    expected: 73466403.84
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+  - id: y5_fcf
+    type: output_key
+    key: y5_fcf
+    expected: 32379549.74
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+  - id: tlb_y5_end_balance
+    type: output_key
+    key: tlb_y5_end_balance
+    expected: 131201352.50
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.2
+
+  # --- Returns ---
+  - id: exit_ev
+    type: output_key
+    key: exit_ev
+    expected: 808130442.24
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+  - id: net_debt_at_exit
+    type: output_key
+    key: net_debt_at_exit
+    expected: 181201352.50
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+  - id: exit_equity_value
+    type: output_key
+    key: exit_equity_value
+    expected: 626929089.74
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+  - id: sponsor_moic
+    type: output_key
+    key: sponsor_moic
+    expected: 2.985376618
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.5
+  - id: sponsor_irr
+    type: output_key
+    key: sponsor_irr
+    expected: 0.244514
+    tolerance_abs: 0.001
+    require_formula: true
+    weight: 1.5

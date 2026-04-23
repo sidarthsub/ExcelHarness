@@ -1,0 +1,22 @@
+id: t1_returns_table
+tier: 1
+time_budget_seconds: 300
+cost_budget_dollars: 1.50
+tags: [cap_table, returns, exit_valuation, single_sheet, reference_formatting]
+reference_files:
+  - inputs/cap_table.xlsx
+  - inputs/style_guide.md
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 3
+  max_questions: 5
+
+# Builder emits results.json mapping these keys → "Sheet!Cell" addresses.
+# The grader dereferences each cell and compares to expected values.
+output_keys:
+  - {key: total_fd, type: formula, description: "Total FD shares (sum across holders)"}
+  - {key: founder_a_pct, type: formula, description: "Founder A percent FD"}
+  - {key: founder_a_payout_500m, type: formula, description: "Founder A payout at $500M exit"}
+  - {key: seed_payout_1b, type: formula, description: "Seed Investors payout at $1B exit"}
+  - {key: series_a_payout_2b, type: formula, description: "Series A Investors payout at $2B exit"}
+  - {key: total_payout_500m, type: formula, description: "Total payout at $500M (should equal $500M)"}

@@ -1,0 +1,11 @@
+- id: seasonality_check
+  matches: ["seasonality sum", "fractions sum", "sum to 1"]
+  answer: "Fractions sum to 1.0 — verify with a SUM formula in the totals row."
+
+- id: price_escalation
+  matches: ["price escalation", "escalator", "price ramp"]
+  answer: "None — price flat at $50 all months."
+
+- id: formula_refs
+  matches: ["formula refs", "monthly units formula", "monthly revenue formula", "hardcode"]
+  answer: "Monthly units = annual_units × seasonality; monthly revenue = units × price."

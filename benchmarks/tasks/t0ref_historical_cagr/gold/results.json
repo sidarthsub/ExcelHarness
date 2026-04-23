@@ -1,0 +1,7 @@
+{
+  "start_revenue": "Calc!B5",
+  "end_revenue": "Calc!B6",
+  "cagr_3yr": "Calc!B10",
+  "cagr_4yr": "Calc!B11",
+  "growth_multiple": "Calc!B12"
+}

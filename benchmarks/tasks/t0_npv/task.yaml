@@ -1,0 +1,15 @@
+id: t0_npv
+tier: 0
+time_budget_seconds: 30
+cost_budget_dollars: 0.10
+tags: [dcf, npv, atomic_formula]
+reference_files: []
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 2
+  max_questions: 3
+
+# Builder emits results.json mapping these keys -> "Sheet!Cell" addresses.
+# The grader dereferences each cell and compares to expected values.
+output_keys:
+  - {key: npv, type: formula, description: "NPV of the cash flow series at the given discount rate"}

@@ -1,0 +1,8 @@
+{
+  "monthly_payment": "'Amortization Schedule'!B5",
+  "month_1_interest": "'Amortization Schedule'!D8",
+  "month_1_principal": "'Amortization Schedule'!E8",
+  "month_60_ending_balance": "'Amortization Schedule'!F67",
+  "total_interest_paid": "'Amortization Schedule'!B70",
+  "total_principal_paid": "'Amortization Schedule'!B71"
+}

@@ -1,0 +1,10 @@
+{
+  "pre_money": "Calc!B3",
+  "round_size": "Calc!B4",
+  "pre_fd": "Calc!B5",
+  "post_money": "Calc!B8",
+  "share_price": "Calc!B9",
+  "new_investor_shares": "Calc!B10",
+  "post_fd": "Calc!B11",
+  "starlight_pct_post": "Calc!B12"
+}

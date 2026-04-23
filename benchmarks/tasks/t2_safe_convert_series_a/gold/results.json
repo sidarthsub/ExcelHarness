@@ -1,0 +1,16 @@
+{
+  "cap_total_fd": "Cap Table!C8",
+  "safe1_cap_price": "SAFE Convert!B9",
+  "safe1_discount_price": "SAFE Convert!B10",
+  "safe1_conversion_price": "SAFE Convert!B11",
+  "safe1_shares_issued": "SAFE Convert!B12",
+  "safe2_cap_price": "SAFE Convert!C9",
+  "safe2_discount_price": "SAFE Convert!C10",
+  "safe2_conversion_price": "SAFE Convert!C11",
+  "safe2_shares_issued": "SAFE Convert!C12",
+  "total_safe_shares": "SAFE Convert!B14",
+  "series_a_headline_price": "Series A!B5",
+  "series_a_new_investor_shares": "Series A!B12",
+  "series_a_pool_topup": "Series A!B13",
+  "series_a_post_fd": "Series A!B14"
+}

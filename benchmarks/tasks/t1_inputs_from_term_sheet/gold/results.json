@@ -1,0 +1,14 @@
+{
+  "pre_money_valuation": "Inputs!B4",
+  "round_size": "Inputs!B5",
+  "post_money_valuation": "Inputs!B6",
+  "nimbus_capital_amount": "Inputs!B10",
+  "arc_ventures_amount": "Inputs!B11",
+  "orbit_partners_amount": "Inputs!B12",
+  "investor_total": "Inputs!B13",
+  "pre_round_fd": "Inputs!B16",
+  "pre_round_unallocated": "Inputs!B17",
+  "option_pool_target_pct": "Inputs!B18",
+  "liquidation_preference": "Inputs!B21",
+  "dividend_rate": "Inputs!B22"
+}

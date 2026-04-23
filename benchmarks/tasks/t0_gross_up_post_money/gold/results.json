@@ -1,0 +1,7 @@
+{
+  "target_post_fd": "Calc!B9",
+  "new_shares_issued": "Calc!B10",
+  "share_price": "Calc!B11",
+  "pre_money": "Calc!B12",
+  "holder_pct_check": "Calc!B13"
+}

@@ -1,0 +1,21 @@
+id: t1_debt_schedule
+tier: 1
+time_budget_seconds: 300
+cost_budget_dollars: 1.50
+tags: [debt, amortization, pmt, single_sheet, reference_formatting]
+reference_files:
+  - inputs/schedule_format.md
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 3
+  max_questions: 5
+
+# Builder emits results.json mapping these keys → "Sheet!Cell" addresses.
+# The grader dereferences each cell and compares to expected values.
+output_keys:
+  - {key: monthly_payment, type: formula, description: "Flat monthly payment computed via PMT"}
+  - {key: month_1_interest, type: formula, description: "Interest portion of month 1"}
+  - {key: month_1_principal, type: formula, description: "Principal portion of month 1"}
+  - {key: month_60_ending_balance, type: formula, description: "Ending balance at end of month 60 (~0)"}
+  - {key: total_interest_paid, type: formula, description: "Sum of interest across all 60 months"}
+  - {key: total_principal_paid, type: formula, description: "Sum of principal across all 60 months = initial principal"}

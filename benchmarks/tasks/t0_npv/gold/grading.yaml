@@ -1,0 +1,15 @@
+recalc: true
+checks:
+  - id: calc_sheet_exists
+    type: sheet_exists
+    sheet: Calc
+    weight: 0.3
+
+  - id: npv_value
+    type: output_key
+    key: npv
+    expected: 1372360.3082253423
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.5
+    description: "NPV of cash flows must match and be formula-driven."

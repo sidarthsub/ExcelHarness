@@ -1,0 +1,29 @@
+id: t2_cap_table_series_ab
+tier: 2
+time_budget_seconds: 900
+cost_budget_dollars: 3.00
+tags: [cap_table, series_a, series_b, multi_sheet, cross_sheet_refs, reference_formatting]
+reference_files:
+  - inputs/pre_cap_table.xlsx
+  - inputs/round_terms.md
+  - inputs/style_reference.md
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 4
+  max_questions: 8
+
+output_keys:
+  # Cap Table
+  - {key: preround_total_fd, type: formula, description: "Total FD on Cap Table"}
+
+  # Series A
+  - {key: series_a_price, type: formula, description: "Series A price = pre_money / pre_FD"}
+  - {key: series_a_new_investor_shares, type: formula, description: "Series A new investor shares"}
+  - {key: post_a_fd, type: formula, description: "Post-money FD after Series A"}
+
+  # Series B
+  - {key: series_b_pre_fd, type: formula, description: "Pre-B FD = post-A FD (cross-sheet ref)"}
+  - {key: series_b_price, type: formula, description: "Series B price = pre_money / post_A_FD"}
+  - {key: series_b_new_investor_shares, type: formula, description: "Series B new investor shares"}
+  - {key: series_b_pool_topup, type: formula, description: "Option pool top-up at Series B (pre-money inclusion net of unallocated)"}
+  - {key: post_b_fd, type: formula, description: "Post-money FD after Series B"}

@@ -1,0 +1,17 @@
+id: t0_pro_rata_allocation
+tier: 0
+time_budget_seconds: 30
+cost_budget_dollars: 0.10
+tags: [cap_table, pro_rata, atomic_formula]
+reference_files: []
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 2
+  max_questions: 3
+
+# Builder emits results.json mapping these keys → "Sheet!Cell" addresses.
+# The grader dereferences each cell and compares to expected values.
+output_keys:
+  - {key: nimbus_allocation, type: formula, description: "Nimbus's pro-rata share of the pool"}
+  - {key: arc_allocation, type: formula, description: "Arc's pro-rata share of the pool"}
+  - {key: orbit_allocation, type: formula, description: "Orbit's pro-rata share of the pool"}

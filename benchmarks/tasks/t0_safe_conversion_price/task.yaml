@@ -1,0 +1,19 @@
+id: t0_safe_conversion_price
+tier: 0
+time_budget_seconds: 30
+cost_budget_dollars: 0.10
+tags: [safe, conversion, atomic_formula]
+reference_files: []
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 2
+  max_questions: 3
+
+# Builder emits results.json mapping these keys -> "Sheet!Cell" addresses.
+# The grader dereferences each cell and compares to expected values.
+output_keys:
+  - {key: headline_price, type: formula, description: "Round headline price = pre_money / pre_FD"}
+  - {key: cap_price, type: formula, description: "SAFE cap price = cap / pre_FD"}
+  - {key: discount_price, type: formula, description: "SAFE discount price = (1-discount) * headline"}
+  - {key: conversion_price, type: formula, description: "SAFE conversion price = MIN(cap, discount)"}
+  - {key: shares_issued, type: formula, description: "SAFE shares issued = investment / conversion price"}

@@ -1,0 +1,83 @@
+recalc: true
+checks:
+  - id: inputs_sheet_exists
+    type: sheet_exists
+    sheet: Inputs
+    weight: 0.5
+
+  # --- semantic values via results.json dereference ---
+  - id: pre_money_valuation
+    type: output_key
+    key: pre_money_valuation
+    expected: 75000000
+    tolerance_rel: 1.0e-6
+    weight: 1.0
+  - id: round_size
+    type: output_key
+    key: round_size
+    expected: 25000000
+    tolerance_rel: 1.0e-6
+    weight: 1.0
+  - id: post_money_valuation
+    type: output_key
+    key: post_money_valuation
+    expected: 100000000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.2
+    description: "Post-money must equal pre+round AND be formula-driven."
+  - id: nimbus_capital_amount
+    type: output_key
+    key: nimbus_capital_amount
+    expected: 15000000
+    tolerance_rel: 1.0e-6
+    weight: 0.6
+  - id: arc_ventures_amount
+    type: output_key
+    key: arc_ventures_amount
+    expected: 6000000
+    tolerance_rel: 1.0e-6
+    weight: 0.5
+  - id: orbit_partners_amount
+    type: output_key
+    key: orbit_partners_amount
+    expected: 4000000
+    tolerance_rel: 1.0e-6
+    weight: 0.5
+  - id: investor_total
+    type: output_key
+    key: investor_total
+    expected: 25000000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.7
+  - id: pre_round_fd
+    type: output_key
+    key: pre_round_fd
+    expected: 8000000
+    tolerance_rel: 1.0e-6
+    weight: 0.6
+  - id: pre_round_unallocated
+    type: output_key
+    key: pre_round_unallocated
+    expected: 250000
+    tolerance_rel: 1.0e-6
+    weight: 0.5
+  - id: option_pool_target_pct
+    type: output_key
+    key: option_pool_target_pct
+    expected: 0.12
+    tolerance_rel: 1.0e-4
+    weight: 0.6
+  - id: liquidation_preference
+    type: output_key
+    key: liquidation_preference
+    expected: 1.0
+    tolerance_rel: 1.0e-4
+    weight: 0.3
+  - id: dividend_rate
+    type: output_key
+    key: dividend_rate
+    expected: 0.08
+    tolerance_rel: 1.0e-4
+    weight: 0.3

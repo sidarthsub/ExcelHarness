@@ -1,0 +1,33 @@
+recalc: true
+checks:
+  - id: calc_sheet_exists
+    type: sheet_exists
+    sheet: Calc
+    weight: 0.3
+
+  - id: nimbus_allocation
+    type: output_key
+    key: nimbus_allocation
+    expected: 8571428.571428572
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+    description: "Nimbus's pro-rata share of the $15M pool, formula-driven."
+
+  - id: arc_allocation
+    type: output_key
+    key: arc_allocation
+    expected: 4285714.285714286
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+    description: "Arc's pro-rata share of the $15M pool, formula-driven."
+
+  - id: orbit_allocation
+    type: output_key
+    key: orbit_allocation
+    expected: 2142857.142857143
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+    description: "Orbit's pro-rata share of the $15M pool, formula-driven."

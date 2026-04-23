@@ -1,0 +1,11 @@
+- id: pro_rata_basis
+  matches: ["pro-rata basis", "by dollars or ownership", "ownership %", "prior investment", "basis"]
+  answer: "By prior dollar investment, not ownership %."
+
+- id: rounding
+  matches: ["round", "integer", "fractional shares", "fractional dollars"]
+  answer: "Do not round. Fractional shares/dollars are fine."
+
+- id: sheet_name
+  matches: ["sheet name", "which sheet", "Calc"]
+  answer: "Use 'Calc' as in the stub."

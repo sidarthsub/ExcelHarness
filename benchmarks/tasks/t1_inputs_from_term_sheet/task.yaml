@@ -1,0 +1,27 @@
+id: t1_inputs_from_term_sheet
+tier: 1
+time_budget_seconds: 400
+cost_budget_dollars: 1.00
+tags: [series_a, inputs_sheet, term_sheet_extraction, reference_reading]
+reference_files:
+  - inputs/term_sheet.md
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 3
+  max_questions: 5
+
+# Builder emits results.json mapping these keys → "Sheet!Cell" addresses.
+# The grader dereferences each cell and compares to expected values.
+output_keys:
+  - {key: pre_money_valuation, type: number, description: "Pre-money $ from term sheet"}
+  - {key: round_size, type: number, description: "New money raised in the round"}
+  - {key: post_money_valuation, type: formula, description: "Post-money = pre + round, must be a formula"}
+  - {key: nimbus_capital_amount, type: number, description: "Lead investor (Nimbus Capital) $"}
+  - {key: arc_ventures_amount, type: number, description: "Arc Ventures allocation $"}
+  - {key: orbit_partners_amount, type: number, description: "Orbit Partners allocation $"}
+  - {key: investor_total, type: formula, description: "Total investor allocations = round size, formula-driven"}
+  - {key: pre_round_fd, type: number, description: "Pre-round fully diluted share count"}
+  - {key: pre_round_unallocated, type: number, description: "Pre-round unallocated option pool shares"}
+  - {key: option_pool_target_pct, type: number, description: "Target option pool % of post-money (decimal, e.g. 0.12)"}
+  - {key: liquidation_preference, type: number, description: "Liquidation preference multiple (e.g. 1.0 for 1x)"}
+  - {key: dividend_rate, type: number, description: "Dividend rate (decimal, e.g. 0.08 for 8%)"}

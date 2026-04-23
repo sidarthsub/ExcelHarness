@@ -1,0 +1,17 @@
+id: t0_dcf_terminal_value
+tier: 0
+time_budget_seconds: 30
+cost_budget_dollars: 0.10
+tags: [dcf, terminal_value, gordon_growth, atomic_formula]
+reference_files: []
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 2
+  max_questions: 3
+
+# Builder emits results.json mapping these keys -> "Sheet!Cell" addresses.
+# The grader dereferences each cell and compares to expected values.
+output_keys:
+  - {key: terminal_value_y5, type: formula, description: "Gordon-growth TV at end of Y5"}
+  - {key: discount_factor_y5, type: formula, description: "1/(1+WACC)^horizon"}
+  - {key: pv_terminal_value, type: formula, description: "PV of TV today = TV x factor"}

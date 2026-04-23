@@ -1,0 +1,9 @@
+{
+  "seasonality_sum": "Revenue Build!B16",
+  "total_annual_units": "Revenue Build!C16",
+  "total_annual_revenue": "Revenue Build!E16",
+  "jul_units": "Revenue Build!C10",
+  "jul_revenue": "Revenue Build!E10",
+  "nov_revenue": "Revenue Build!E14",
+  "weighted_avg_price": "Revenue Build!D16"
+}

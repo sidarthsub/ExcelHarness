@@ -1,0 +1,23 @@
+- id: sponsor_equity_plug
+  matches: ["sponsor equity", "equity plug", "how much equity"]
+  answer: "Sponsor equity = Total uses − TLB − Mezz. Plug, not a fixed input."
+
+- id: sweep_mechanics
+  matches: ["cash sweep", "sweep formula", "how sweep", "tlb paydown"]
+  answer: "TLB takes 100% of excess FCF after mandatory amort. Don't over-pay (floor at 0). Formula: MAX(0, MIN(FCF − mandatory, TLB_beg − mandatory))."
+
+- id: fcf_definition
+  matches: ["fcf", "free cash flow", "cash flow formula"]
+  answer: "FCF = NI + D&A − Capex (no WC changes). After-tax, after-interest."
+
+- id: exit_valuation
+  matches: ["exit ev", "exit value", "exit proceeds", "how exit"]
+  answer: "Exit EV = 11 × Y5 EBITDA. Sponsor gets Exit EV − TLB_Y5 − Mezz."
+
+- id: mezz_behavior
+  matches: ["mezz", "mezzanine", "mezz amortization", "mezz interest"]
+  answer: "Mezz never amortizes; constant $50M balance; interest $5M/yr flat."
+
+- id: sheet_names
+  matches: ["sheet name", "name the sheet", "what to call"]
+  answer: "Exactly: 'Sources and Uses', 'Operating Model', 'Returns'."

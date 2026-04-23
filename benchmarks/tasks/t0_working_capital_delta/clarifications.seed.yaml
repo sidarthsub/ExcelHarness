@@ -1,0 +1,11 @@
+- id: wc_conventions
+  matches: ["ar formula", "ap formula", "inventory formula", "working capital convention", "dso dpo dio"]
+  answer: "AR = Rev×DSO/365; AP = COGS×DPO/365; Inv = COGS×DIO/365."
+
+- id: cash_sign_convention
+  matches: ["sign", "source or use", "cash impact sign", "positive negative"]
+  answer: "Source-positive: −ΔAR + ΔAP − ΔInv."
+
+- id: days_basis
+  matches: ["365", "360", "day count", "year basis"]
+  answer: "365-day year."

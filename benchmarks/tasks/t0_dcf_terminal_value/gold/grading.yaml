@@ -1,0 +1,33 @@
+recalc: true
+checks:
+  - id: calc_sheet_exists
+    type: sheet_exists
+    sheet: Calc
+    weight: 0.3
+
+  - id: terminal_value_y5
+    type: output_key
+    key: terminal_value_y5
+    expected: 157692307.69230768
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.2
+    description: "Gordon-growth terminal value at end of Y5."
+
+  - id: discount_factor_y5
+    type: output_key
+    key: discount_factor_y5
+    expected: 0.6499313862983452
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.6
+    description: "Year 5 discount factor = 1/(1+WACC)^horizon."
+
+  - id: pv_terminal_value
+    type: output_key
+    key: pv_terminal_value
+    expected: 102489180.14704674
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.2
+    description: "PV of terminal value today = TV x factor."

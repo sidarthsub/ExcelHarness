@@ -1,0 +1,96 @@
+recalc: true
+checks:
+  - id: calc_sheet_exists
+    type: sheet_exists
+    sheet: Calc
+    weight: 0.3
+
+  - id: ar_y0
+    type: output_key
+    key: ar_y0
+    expected: 9863013.698630137
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.5
+    description: "AR Y0 = Rev_Y0 × DSO / 365."
+
+  - id: ar_y1
+    type: output_key
+    key: ar_y1
+    expected: 12328767.12328767
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.5
+    description: "AR Y1 = Rev_Y1 × DSO / 365."
+
+  - id: delta_ar
+    type: output_key
+    key: delta_ar
+    expected: 2465753.424657533
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+    description: "ΔAR = AR_Y1 − AR_Y0."
+
+  - id: ap_y0
+    type: output_key
+    key: ap_y0
+    expected: 3945205.479452055
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.5
+    description: "AP Y0 = COGS_Y0 × DPO / 365."
+
+  - id: ap_y1
+    type: output_key
+    key: ap_y1
+    expected: 4931506.849315069
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.5
+    description: "AP Y1 = COGS_Y1 × DPO / 365."
+
+  - id: delta_ap
+    type: output_key
+    key: delta_ap
+    expected: 986301.3698630137
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+    description: "ΔAP = AP_Y1 − AP_Y0."
+
+  - id: inv_y0
+    type: output_key
+    key: inv_y0
+    expected: 1972602.7397260275
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.5
+    description: "Inv Y0 = COGS_Y0 × DIO / 365."
+
+  - id: inv_y1
+    type: output_key
+    key: inv_y1
+    expected: 2465753.4246575343
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.5
+    description: "Inv Y1 = COGS_Y1 × DIO / 365."
+
+  - id: delta_inv
+    type: output_key
+    key: delta_inv
+    expected: 493150.68493150687
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+    description: "ΔInv = Inv_Y1 − Inv_Y0."
+
+  - id: net_wc_cash_impact
+    type: output_key
+    key: net_wc_cash_impact
+    expected: -1972602.739726026
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.5
+    description: "Net WC cash impact = −ΔAR + ΔAP − ΔInv. Source-positive."

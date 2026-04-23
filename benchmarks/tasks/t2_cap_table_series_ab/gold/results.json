@@ -1,0 +1,11 @@
+{
+  "preround_total_fd": "Cap Table!C8",
+  "series_a_price": "Series A!B6",
+  "series_a_new_investor_shares": "Series A!B7",
+  "post_a_fd": "Series A!B10",
+  "series_b_pre_fd": "Series B!B3",
+  "series_b_price": "Series B!B6",
+  "series_b_new_investor_shares": "Series B!B7",
+  "series_b_pool_topup": "Series B!B10",
+  "post_b_fd": "Series B!B12"
+}

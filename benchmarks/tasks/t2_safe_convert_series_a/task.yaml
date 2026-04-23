@@ -1,0 +1,34 @@
+id: t2_safe_convert_series_a
+tier: 2
+time_budget_seconds: 600
+cost_budget_dollars: 3.00
+tags: [cap_table, safe_conversion, series_a, multi_sheet, cross_sheet_refs]
+reference_files:
+  - inputs/pre_cap_table.xlsx
+  - inputs/safe_terms.md
+  - inputs/round_terms.md
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 4
+  max_questions: 8
+
+output_keys:
+  # Cap Table
+  - {key: cap_total_fd, type: number, description: "Total fully diluted shares on Cap Table (should be 10.5M)"}
+
+  # SAFE Convert — per-SAFE conversion math
+  - {key: safe1_cap_price, type: formula, description: "Harbor Fund cap price = cap / pre_FD"}
+  - {key: safe1_discount_price, type: formula, description: "Harbor Fund discount price = (1-discount) * headline"}
+  - {key: safe1_conversion_price, type: formula, description: "Harbor Fund conversion price = MIN(cap, discount)"}
+  - {key: safe1_shares_issued, type: formula, description: "Harbor Fund shares = investment / conversion price"}
+  - {key: safe2_cap_price, type: formula, description: "Archer Angels cap price = cap / pre_FD"}
+  - {key: safe2_discount_price, type: formula, description: "Archer Angels discount price = (1-discount) * headline"}
+  - {key: safe2_conversion_price, type: formula, description: "Archer Angels conversion price = MIN(cap, discount)"}
+  - {key: safe2_shares_issued, type: formula, description: "Archer Angels shares = investment / conversion price"}
+  - {key: total_safe_shares, type: formula, description: "Sum of SAFE1 + SAFE2 shares"}
+
+  # Series A — round mechanics
+  - {key: series_a_headline_price, type: formula, description: "Headline price per share = pre_money / pre_FD"}
+  - {key: series_a_new_investor_shares, type: formula, description: "New investor shares = round_size / headline_price"}
+  - {key: series_a_pool_topup, type: formula, description: "Option pool top-up, pre-money inclusion net of unalloc"}
+  - {key: series_a_post_fd, type: formula, description: "Post-money fully diluted = pre_FD + SAFEs + new_inv + pool_topup"}

@@ -1,0 +1,11 @@
+- id: sum_scope
+  matches: ["which rows", "sum scope", "include all", "what to sum", "which classes"]
+  answer: "Sum every row — common, all preferred classes, options (granted + unallocated), warrants."
+
+- id: include_warrants
+  matches: ["warrants", "include warrants"]
+  answer: "Yes, warrants are part of fully diluted."
+
+- id: import_approach
+  matches: ["import", "copy sheet", "cross-workbook", "reference", "how to reference"]
+  answer: "Copying the Cap Table into the model workbook via bridge.copy_sheet_from_input is fine; then sum there."

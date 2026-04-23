@@ -1,0 +1,84 @@
+recalc: true
+checks:
+  # --- sheet presence (3) ---
+  - id: cap_table_sheet
+    type: sheet_exists
+    sheet: Cap Table
+    weight: 0.5
+  - id: series_a_sheet
+    type: sheet_exists
+    sheet: Series A
+    weight: 0.5
+  - id: series_b_sheet
+    type: sheet_exists
+    sheet: Series B
+    weight: 0.5
+
+  # --- Cap Table ---
+  - id: preround_total_fd
+    type: output_key
+    key: preround_total_fd
+    expected: 10000000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.6
+
+  # --- Series A ---
+  - id: series_a_price
+    type: output_key
+    key: series_a_price
+    expected: 4.0
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+  - id: series_a_new_investor_shares
+    type: output_key
+    key: series_a_new_investor_shares
+    expected: 2500000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+  - id: post_a_fd
+    type: output_key
+    key: post_a_fd
+    expected: 12500000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+
+  # --- Series B ---
+  - id: series_b_pre_fd
+    type: output_key
+    key: series_b_pre_fd
+    expected: 12500000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+  - id: series_b_price
+    type: output_key
+    key: series_b_price
+    expected: 8.0
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+  - id: series_b_new_investor_shares
+    type: output_key
+    key: series_b_new_investor_shares
+    expected: 3125000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+  - id: series_b_pool_topup
+    type: output_key
+    key: series_b_pool_topup
+    expected: 1513888.8888888889
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.5
+  - id: post_b_fd
+    type: output_key
+    key: post_b_fd
+    expected: 17138888.888888888
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.5

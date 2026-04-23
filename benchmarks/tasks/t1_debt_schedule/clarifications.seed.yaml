@@ -1,0 +1,19 @@
+- id: pmt_convention
+  matches: ["pmt", "payment formula", "PMT sign", "positive or negative"]
+  answer: "Use Excel's PMT(rate/12, 60, -principal) — positive return."
+
+- id: compounding
+  matches: ["compounding", "day count", "30/360", "interest convention"]
+  answer: "Monthly compounding. Interest_t = beg_balance_t × (annual_rate/12)."
+
+- id: schedule_length
+  matches: ["schedule length", "how many rows", "periods", "months"]
+  answer: "60 monthly rows."
+
+- id: final_balance_tolerance
+  matches: ["final balance", "zero balance", "tolerance", "rounding"]
+  answer: "Within $0.01 of zero is acceptable."
+
+- id: sheet_name
+  matches: ["sheet name", "what should the sheet be called", "name the sheet"]
+  answer: "Name it exactly 'Amortization Schedule'."

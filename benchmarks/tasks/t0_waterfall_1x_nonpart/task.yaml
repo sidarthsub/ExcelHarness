@@ -1,0 +1,16 @@
+id: t0_waterfall_1x_nonpart
+tier: 0
+time_budget_seconds: 30
+cost_budget_dollars: 0.10
+tags: [waterfall, liquidation, non_participating, atomic_formula]
+reference_files: []
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 2
+  max_questions: 3
+
+output_keys:
+  - {key: pref_amount, type: formula, description: "LP's preference amount = investment × multiple"}
+  - {key: convert_amount, type: formula, description: "LP's converted amount = ownership × exit"}
+  - {key: lp_proceeds, type: formula, description: "LP's actual take = MAX(pref, convert)"}
+  - {key: common_proceeds, type: formula, description: "Common holders' proceeds = exit − LP proceeds"}

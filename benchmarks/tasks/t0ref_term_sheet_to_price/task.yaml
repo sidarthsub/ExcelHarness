@@ -1,0 +1,23 @@
+id: t0ref_term_sheet_to_price
+tier: 0
+time_budget_seconds: 60
+cost_budget_dollars: 0.20
+tags: [safe, term_sheet, reference_reading, atomic_formula]
+reference_files:
+  - inputs/term_sheet.md
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 2
+  max_questions: 3
+
+# Builder emits results.json mapping these keys -> "Sheet!Cell" addresses.
+# The grader dereferences each cell and compares to expected values.
+output_keys:
+  - {key: pre_money, type: number, description: "Pre-money $ extracted from the term sheet"}
+  - {key: round_size, type: number, description: "New money $ extracted"}
+  - {key: pre_fd, type: number, description: "Pre-round FD shares extracted"}
+  - {key: post_money, type: formula, description: "Post-money = pre + round"}
+  - {key: share_price, type: formula, description: "Share price = pre_money / pre_fd"}
+  - {key: new_investor_shares, type: formula, description: "New shares = round_size / share_price"}
+  - {key: post_fd, type: formula, description: "Post-round FD = pre_fd + new_shares"}
+  - {key: starlight_pct_post, type: formula, description: "Starlight post-round ownership fraction"}

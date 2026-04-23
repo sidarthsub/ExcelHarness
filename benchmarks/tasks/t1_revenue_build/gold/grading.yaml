@@ -1,0 +1,58 @@
+recalc: true
+checks:
+  - id: revenue_build_sheet_exists
+    type: sheet_exists
+    sheet: Revenue Build
+    weight: 0.5
+
+  # --- semantic values via results.json dereference ---
+  - id: seasonality_sum
+    type: output_key
+    key: seasonality_sum
+    expected: 1.0
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.5
+  - id: total_annual_units
+    type: output_key
+    key: total_annual_units
+    expected: 120000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.7
+  - id: total_annual_revenue
+    type: output_key
+    key: total_annual_revenue
+    expected: 6000000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.2
+    description: "Total annual revenue — headline; must be formula-driven."
+  - id: jul_units
+    type: output_key
+    key: jul_units
+    expected: 12000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.6
+  - id: jul_revenue
+    type: output_key
+    key: jul_revenue
+    expected: 600000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.6
+  - id: nov_revenue
+    type: output_key
+    key: nov_revenue
+    expected: 660000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.6
+  - id: weighted_avg_price
+    type: output_key
+    key: weighted_avg_price
+    expected: 50
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.5

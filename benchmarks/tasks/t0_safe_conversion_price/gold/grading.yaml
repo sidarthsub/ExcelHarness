@@ -1,0 +1,52 @@
+recalc: true
+checks:
+  - id: calc_sheet_exists
+    type: sheet_exists
+    sheet: Calc
+    weight: 0.3
+
+  # --- semantic values via results.json dereference ---
+  - id: headline_price
+    type: output_key
+    key: headline_price
+    expected: 4.0
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+    description: "Round headline price = pre_money / pre_FD."
+
+  - id: cap_price
+    type: output_key
+    key: cap_price
+    expected: 3.0
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+    description: "SAFE cap price = cap / pre_FD."
+
+  - id: discount_price
+    type: output_key
+    key: discount_price
+    expected: 3.2
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+    description: "SAFE discount price = (1 - discount) * headline_price."
+
+  - id: conversion_price
+    type: output_key
+    key: conversion_price
+    expected: 3.0
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.2
+    description: "SAFE conversion price = MIN(cap_price, discount_price)."
+
+  - id: shares_issued
+    type: output_key
+    key: shares_issued
+    expected: 1000000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.2
+    description: "SAFE shares issued = investment / conversion_price."

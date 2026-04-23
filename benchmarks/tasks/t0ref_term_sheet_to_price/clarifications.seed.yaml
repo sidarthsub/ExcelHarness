@@ -1,0 +1,11 @@
+- id: source_extraction
+  matches: ["where do inputs", "source of numbers", "extract values", "input values", "pre-money value", "round size"]
+  answer: "All numeric inputs come from inputs/term_sheet.md. Don't invent values."
+
+- id: share_price_formula
+  matches: ["share price", "price per share", "how to compute price"]
+  answer: "Simple pre_money / pre_fd."
+
+- id: pool_handling
+  matches: ["option pool", "pool expansion", "pool top-up"]
+  answer: "No option pool expansion in this task — see term sheet note."

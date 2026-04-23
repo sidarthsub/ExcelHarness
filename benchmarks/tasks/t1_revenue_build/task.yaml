@@ -1,0 +1,22 @@
+id: t1_revenue_build
+tier: 1
+time_budget_seconds: 240
+cost_budget_dollars: 1.50
+tags: [revenue, seasonality, monthly_build, single_sheet, reference_formatting]
+reference_files:
+  - inputs/assumptions.md
+stub_file: stubs/starter.xlsx
+clarification_budget:
+  max_rounds: 3
+  max_questions: 5
+
+# Builder emits results.json mapping these keys → "Sheet!Cell" addresses.
+# The grader dereferences each cell and compares to expected values.
+output_keys:
+  - {key: seasonality_sum, type: formula, description: "Sum of monthly seasonality fractions = 1.0"}
+  - {key: total_annual_units, type: formula, description: "Total units summed across months"}
+  - {key: total_annual_revenue, type: formula, description: "Total revenue summed across months"}
+  - {key: jul_units, type: formula, description: "July units"}
+  - {key: jul_revenue, type: formula, description: "July revenue"}
+  - {key: nov_revenue, type: formula, description: "November revenue (peak month)"}
+  - {key: weighted_avg_price, type: formula, description: "Weighted average price = total rev / total units"}

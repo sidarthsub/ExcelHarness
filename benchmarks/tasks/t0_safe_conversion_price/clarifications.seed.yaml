@@ -1,0 +1,15 @@
+- id: conversion_rule
+  matches: ["conversion rule", "min or max", "cap vs discount", "which price", "lower price"]
+  answer: "MIN(cap_price, discount_price) — SAFE converts at the lower of the two."
+
+- id: discount_direction
+  matches: ["discount direction", "1 minus", "80%", "how to apply discount"]
+  answer: "(1 - discount) * headline_price; 20% discount means price is 80% of headline."
+
+- id: cap_denominator
+  matches: ["cap denominator", "pre-FD", "fully diluted", "circular", "non-circular"]
+  answer: "Use pre_round_FD as the cap denominator (simple, non-circular form)."
+
+- id: rounding
+  matches: ["round", "integer", "fractional shares"]
+  answer: "Don't round. Fractional shares are acceptable for this calc."

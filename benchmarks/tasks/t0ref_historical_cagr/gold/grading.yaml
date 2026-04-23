@@ -1,0 +1,50 @@
+recalc: true
+checks:
+  # --- sheet presence ---
+  - id: calc_sheet
+    type: sheet_exists
+    sheet: Calc
+    weight: 0.3
+  - id: revenue_sheet
+    type: sheet_exists
+    sheet: Revenue
+    weight: 0.3
+
+  # --- level outputs (linked to the Revenue sheet) ---
+  - id: start_revenue
+    type: output_key
+    key: start_revenue
+    expected: 55000000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.7
+  - id: end_revenue
+    type: output_key
+    key: end_revenue
+    expected: 130000000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.7
+
+  # --- rate / ratio outputs ---
+  - id: cagr_3yr
+    type: output_key
+    key: cagr_3yr
+    expected: 0.3320695095112127
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.2
+  - id: cagr_4yr
+    type: output_key
+    key: cagr_4yr
+    expected: 0.34267480714132503
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+  - id: growth_multiple
+    type: output_key
+    key: growth_multiple
+    expected: 3.25
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.7

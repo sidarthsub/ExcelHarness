@@ -1,0 +1,120 @@
+recalc: true
+checks:
+  # --- sheet presence (3) ---
+  - id: cap_table_sheet
+    type: sheet_exists
+    sheet: Cap Table
+    weight: 0.5
+  - id: safe_convert_sheet
+    type: sheet_exists
+    sheet: SAFE Convert
+    weight: 0.5
+  - id: series_a_sheet
+    type: sheet_exists
+    sheet: Series A
+    weight: 0.5
+
+  # --- Cap Table output ---
+  - id: cap_total_fd
+    type: output_key
+    key: cap_total_fd
+    expected: 10500000
+    tolerance_rel: 1.0e-6
+    weight: 0.8
+
+  # --- SAFE Convert: per-SAFE conversion math (values + formula) ---
+  - id: safe1_cap_price
+    type: output_key
+    key: safe1_cap_price
+    expected: 1.9047619047619047
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.6
+  - id: safe1_discount_price
+    type: output_key
+    key: safe1_discount_price
+    expected: 3.8095238095238093
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.4
+  - id: safe1_conversion_price
+    type: output_key
+    key: safe1_conversion_price
+    expected: 1.9047619047619047
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+  - id: safe1_shares_issued
+    type: output_key
+    key: safe1_shares_issued
+    expected: 1050000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+
+  - id: safe2_cap_price
+    type: output_key
+    key: safe2_cap_price
+    expected: 2.3809523809523809
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.6
+  - id: safe2_discount_price
+    type: output_key
+    key: safe2_discount_price
+    expected: 3.0476190476190474
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.6
+  - id: safe2_conversion_price
+    type: output_key
+    key: safe2_conversion_price
+    expected: 2.3809523809523809
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.8
+  - id: safe2_shares_issued
+    type: output_key
+    key: safe2_shares_issued
+    expected: 630000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+
+  - id: total_safe_shares
+    type: output_key
+    key: total_safe_shares
+    expected: 1680000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.7
+
+  # --- Series A outputs (values + formula linkage) ---
+  - id: series_a_headline_price
+    type: output_key
+    key: series_a_headline_price
+    expected: 3.8095238095238093
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+  - id: series_a_new_investor_shares
+    type: output_key
+    key: series_a_new_investor_shares
+    expected: 3937500
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+  - id: series_a_pool_topup
+    type: output_key
+    key: series_a_pool_topup
+    expected: 1235277.7777777778
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.5
+  - id: series_a_post_fd
+    type: output_key
+    key: series_a_post_fd
+    expected: 17352777.777777778
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.5

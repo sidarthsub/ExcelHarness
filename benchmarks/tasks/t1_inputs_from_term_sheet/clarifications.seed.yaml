@@ -1,0 +1,19 @@
+- id: post_money_derivation
+  matches: ["post-money", "derive post", "hardcode post"]
+  answer: "Derive post-money as pre-money + round size. Do not hardcode."
+
+- id: sheet_name
+  matches: ["sheet name", "what should the sheet be called", "name the sheet"]
+  answer: "Name it exactly 'Inputs' — no prefix, no suffix."
+
+- id: investor_percent_basis
+  matches: ["% of round", "percent basis", "percentage basis"]
+  answer: "% of round = investor amount / total round size."
+
+- id: preference_format
+  matches: ["liquidation preference format", "1x vs 1.0", "store preference"]
+  answer: "Store as 1.0 with a '0.0\"x\"' format. The value should be numeric."
+
+- id: section_layout
+  matches: ["layout", "section order", "sections"]
+  answer: "Four sections in this order: Round sizing, Investor allocations, Cap table mechanics, Preference terms."

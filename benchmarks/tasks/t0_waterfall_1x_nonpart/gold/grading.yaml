@@ -1,0 +1,42 @@
+recalc: true
+checks:
+  - id: calc_sheet_exists
+    type: sheet_exists
+    sheet: Calc
+    weight: 0.3
+
+  - id: pref_amount
+    type: output_key
+    key: pref_amount
+    expected: 12000000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.0
+    description: "LP preference amount = investment × multiple."
+
+  - id: convert_amount
+    type: output_key
+    key: convert_amount
+    expected: 13500000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.0
+    description: "LP conversion amount = ownership × exit."
+
+  - id: lp_proceeds
+    type: output_key
+    key: lp_proceeds
+    expected: 13500000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.3
+    description: "LP actual proceeds = MAX(preference, conversion). Most important."
+
+  - id: common_proceeds
+    type: output_key
+    key: common_proceeds
+    expected: 31500000
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.0
+    description: "Common proceeds = exit − LP proceeds."

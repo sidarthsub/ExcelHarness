@@ -1,0 +1,27 @@
+- id: pre_fd_base
+  matches: ["pre-round fd", "what goes in pre fd", "what is pre_fd"]
+  answer: "Pre-round FD is the 10,500,000 total from the input Cap Table. Reference that cell, don't hardcode."
+
+- id: headline_formula
+  matches: ["headline price formula", "headline price", "how compute headline"]
+  answer: "Headline price = pre-money / pre-round FD. Simple division, no SAFE-adjusted denominator."
+
+- id: safe_conversion_rule
+  matches: ["conversion price", "safe conversion", "which price wins", "min of"]
+  answer: "Conversion price = MIN(cap_price, discount_price). cap_price = cap/pre_FD. discount_price = (1-discount)*headline."
+
+- id: pool_topup_rule
+  matches: ["option pool", "pool top-up", "top up formula", "pool inclusion"]
+  answer: "Pre-money inclusion, net of existing unallocated. Solve: (unalloc + topup) = 10% * (pre_FD + safe + new_inv + topup)."
+
+- id: cross_sheet_refs
+  matches: ["cross-sheet", "reference other sheet", "link sheets"]
+  answer: "Yes — SAFE Convert reads from Cap Table and Series A; Series A reads total SAFE shares from SAFE Convert. Use cross-sheet formulas."
+
+- id: sheet_names
+  matches: ["sheet name", "what to name", "name the sheet"]
+  answer: "Exactly: 'Cap Table', 'SAFE Convert', 'Series A'."
+
+- id: discount_sign
+  matches: ["discount direction", "discount formula", "1 minus discount"]
+  answer: "discount_price = (1 - discount) * headline. A 20% discount means price is 80% of headline."

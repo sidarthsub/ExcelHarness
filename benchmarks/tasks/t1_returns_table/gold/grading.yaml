@@ -1,0 +1,56 @@
+recalc: true
+checks:
+  - id: returns_sheet_exists
+    type: sheet_exists
+    sheet: Returns Analysis
+    weight: 0.5
+
+  # --- semantic values via results.json dereference ---
+  - id: total_fd
+    type: output_key
+    key: total_fd
+    expected: 11000000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.5
+
+  - id: founder_a_pct
+    type: output_key
+    key: founder_a_pct
+    expected: 0.36363636363636
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 0.7
+
+  - id: founder_a_payout_500m
+    type: output_key
+    key: founder_a_payout_500m
+    expected: 181818181.81818
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+
+  - id: seed_payout_1b
+    type: output_key
+    key: seed_payout_1b
+    expected: 181818181.81818
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+
+  - id: series_a_payout_2b
+    type: output_key
+    key: series_a_payout_2b
+    expected: 272727272.72727
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.0
+
+  - id: total_payout_500m
+    type: output_key
+    key: total_payout_500m
+    expected: 500000000
+    tolerance_rel: 1.0e-4
+    require_formula: true
+    weight: 1.2
+    description: "Sanity check: pro-rata payouts at $500M must sum to $500M."

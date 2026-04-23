@@ -1,0 +1,11 @@
+- id: solution_path
+  matches: ["how to solve", "approach", "where to start", "solution path"]
+  answer: "target_post_fd = holder_shares / target_pct; everything else follows."
+
+- id: option_pool
+  matches: ["option pool", "pool", "new pool"]
+  answer: "No pool change in this calc."
+
+- id: rounding
+  matches: ["round", "integer", "fractional shares"]
+  answer: "Don't round."

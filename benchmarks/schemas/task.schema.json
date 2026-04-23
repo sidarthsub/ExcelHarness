@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BenchmarkTask",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "tier", "time_budget_seconds", "cost_budget_dollars", "tags"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "tier": {"type": "integer", "minimum": 0, "maximum": 3},
+    "time_budget_seconds": {"type": "number", "exclusiveMinimum": 0},
+    "cost_budget_dollars": {"type": "number", "exclusiveMinimum": 0},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "reference_files": {"type": "array", "items": {"type": "string"}},
+    "stub_file": {"type": "string"},
+    "output_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sheet": {"type": "string"},
+        "cell": {"type": "string"}
+      }
+    },
+    "clarification_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_rounds": {"type": "integer", "minimum": 0, "default": 5},
+        "max_questions": {"type": "integer", "minimum": 0, "default": 10}
+      }
+    },
+    "output_keys": {
+      "type": "array",
+      "description": "Semantic keys the Builder must emit in results.json, each mapping to a Sheet!Cell address.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key"],
+        "properties": {
+          "key": {"type": "string"},
+          "type": {
+            "type": "string",
+            "enum": ["number", "formula", "text"],
+            "description": "Expected cell type. 'formula' requires both a correct value AND a formula in the cell."
+          },
+          "description": {"type": "string"}
+        }
+      }
+    }
+  }
+}

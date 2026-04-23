@@ -1,0 +1,51 @@
+recalc: true
+checks:
+  - id: calc_sheet_exists
+    type: sheet_exists
+    sheet: Calc
+    weight: 0.3
+
+  - id: target_post_fd_value
+    type: output_key
+    key: target_post_fd
+    expected: 15000000.0
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.7
+    description: "Target post-round fully diluted share count."
+
+  - id: new_shares_issued_value
+    type: output_key
+    key: new_shares_issued
+    expected: 10000000.0
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.7
+    description: "New investor shares issued in the round."
+
+  - id: share_price_value
+    type: output_key
+    key: share_price
+    expected: 1.5
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.8
+    description: "Per-share price for the round."
+
+  - id: pre_money_value
+    type: output_key
+    key: pre_money
+    expected: 7500000.0
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 1.2
+    description: "Pre-money valuation implied by the target holder %."
+
+  - id: holder_pct_check_value
+    type: output_key
+    key: holder_pct_check
+    expected: 0.2
+    tolerance_rel: 1.0e-6
+    require_formula: true
+    weight: 0.5
+    description: "Sanity check: holder % post-round equals target."
