@@ -408,7 +408,11 @@ async def run_headless(
     # --- Planner + Oracle phase ---
     spec: dict | None = None
     planner_stats: dict = {}
-    if not skip_planner:
+    task_tier = task_meta.get("tier", 0)
+    # Tier-0 tasks are atomic and fully specified via results_contract +
+    # brief; skip the planner to avoid 2 extra sonnet turns (~$0.10 cold).
+    _should_skip_planner = skip_planner or (task_tier == 0)
+    if not _should_skip_planner:
         try:
             spec, planner_stats = await run_planner_phase(task_id, task_dir, run_dir, model=model)
         except Exception as e:
@@ -464,6 +468,10 @@ async def run_headless(
             f"  Model complete. Ready for review.\n"
             f"- NO multi-sheet eval feedback loop here. b.checkpoint() just saves.\n"
             f"  If you want a sanity check, Read the saved xlsx or call b.dump_sheet().\n"
+            f"- HEADLESS SINGLE-PASS: Do NOT emit any between-sheet yield sentences (e.g. 'Sheet 1 done, moving to...'). "
+            f"Build all sheets back-to-back in the fewest turns possible. There are no fail files or mid-session eval "
+            f"messages to wait for. Proceed directly from one sheet to the next and emit the final sentinel only "
+            f"when ALL sheets are complete and results.json is written.\n"
             f"- The task ships with pre-resolved clarifications below.\n\n"
             f"{results_contract}"
             f"{context}"
