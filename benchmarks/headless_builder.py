@@ -501,6 +501,15 @@ async def run_headless(
 
         system_prompt = (AGENTS_DIR / "builder_v3.md").read_text()
 
+        # Tier-0 tasks are atomic and simple; haiku is 3× cheaper per token
+        # and sufficient for single-formula builds. Extended thinking is a
+        # sonnet-only feature, so disable it when downgrading.
+        builder_model = model
+        builder_thinking_tokens = 5000
+        if task_tier == 0 and model == "sonnet":
+            builder_model = "haiku"
+            builder_thinking_tokens = 0
+
         opts = ClaudeAgentOptions(
             system_prompt=system_prompt,
             allowed_tools=[
@@ -514,8 +523,8 @@ async def run_headless(
             ],
             permission_mode="bypassPermissions",
             cwd=str(ROOT),
-            model=model,
-            max_thinking_tokens=5000,
+            model=builder_model,
+            max_thinking_tokens=builder_thinking_tokens,
             add_dirs=[str(task_dir), str(run_dir)],
             env={
                 "BRIDGE_URL": server.base_url,
@@ -655,7 +664,7 @@ async def run_headless(
         "wall_seconds": round(wall, 2),
         "time_budget_seconds": time_budget,
         "over_budget": wall > time_budget,
-        "builder_model": model,
+        "builder_model": builder_model,
         "builder_usage": usage_totals,
         "planner_stats": planner_stats,
         "dollars": round(total_cost, 4),
