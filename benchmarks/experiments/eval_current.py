@@ -60,11 +60,12 @@ HOLDOUT_SET = [
     "t2_lbo_mini",
 ]
 
-# Full pools for rotation. Task tiers are roughly balanced for speed: t0s
-# run in ~60s, t1s in ~180s, t2s in ~600s. Visible pool is all t0+t1 to
-# keep iteration walls bounded; holdout pool can include a t2 since it
-# fires rarely.
-VISIBLE_POOL = [
+# Full pools for rotation. Task tiers are roughly balanced for speed:
+# t0s ~60s, t1s ~180s, t2s ~600s. Visible is split by tier and rotation
+# enforces 1 t0 + 1 t1 — broader signal than picking any 2 from a flat
+# pool (which routinely drew both t0s and missed multi-step build signal).
+# Holdout includes t2s since it fires rarely.
+T0_VISIBLE_POOL = [
     "t0_npv",
     "t0_option_pool_issuance",
     "t0_gross_up_post_money",
@@ -76,10 +77,16 @@ VISIBLE_POOL = [
     "t0ref_cap_table_fd_count",
     "t0ref_historical_cagr",
     "t0ref_term_sheet_to_price",
+]
+
+T1_VISIBLE_POOL = [
     "t1_inputs_from_term_sheet",
     "t1_debt_schedule",
     "t1_returns_table",
 ]
+
+# Combined view kept for backward-compat callers that want the full set.
+VISIBLE_POOL = T0_VISIBLE_POOL + T1_VISIBLE_POOL
 
 HOLDOUT_POOL = [
     "t0_dcf_terminal_value",
@@ -90,17 +97,19 @@ HOLDOUT_POOL = [
 ]
 
 
-def rotate_sets(seed: int | None, n_visible: int = 2, n_holdout: int = 2) -> tuple[list[str], list[str]]:
-    """Pick visible and holdout subsets from their pools.
+def rotate_sets(seed: int | None, n_visible_t0: int = 1, n_visible_t1: int = 1,
+                n_holdout: int = 2) -> tuple[list[str], list[str]]:
+    """Pick visible (1 t0 + 1 t1 by default) and holdout subsets from their pools.
 
     Deterministic given `seed`. Visible and holdout are disjoint — a task
     drawn for visible is excluded from the holdout pool so the Researcher
     can't accidentally tune against a task that also appears in its
-    guardrail.
+    guardrail. Forcing one tier of each in visible prevents rotation luck
+    from yielding all-t0 sessions (which give no multi-step build signal).
     """
     import random
     rng = random.Random(seed if seed is not None else 0)
-    visible = rng.sample(VISIBLE_POOL, n_visible)
+    visible = rng.sample(T0_VISIBLE_POOL, n_visible_t0) + rng.sample(T1_VISIBLE_POOL, n_visible_t1)
     remaining_holdout = [t for t in HOLDOUT_POOL if t not in visible]
     holdout = rng.sample(remaining_holdout, min(n_holdout, len(remaining_holdout)))
     return visible, holdout
