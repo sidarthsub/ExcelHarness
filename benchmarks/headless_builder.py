@@ -501,12 +501,14 @@ async def run_headless(
 
         system_prompt = (AGENTS_DIR / "builder_v3.md").read_text()
 
-        # Tier-0 tasks are atomic and simple; haiku is 3× cheaper per token
-        # and sufficient for single-formula builds. Extended thinking is a
-        # sonnet-only feature, so disable it when downgrading.
+        # Tier-0 and tier-1 tasks are sufficiently simple for haiku, which is
+        # 3× cheaper per input token than sonnet. Tier-1 tasks like
+        # inputs_from_term_sheet are mechanical extraction tasks (read doc →
+        # copy values) that do not require sonnet-level reasoning. Extended
+        # thinking is a sonnet-only feature, so disable it when downgrading.
         builder_model = model
         builder_thinking_tokens = 5000
-        if task_tier == 0 and model == "sonnet":
+        if task_tier <= 1 and model == "sonnet":
             builder_model = "haiku"
             builder_thinking_tokens = 0
 
