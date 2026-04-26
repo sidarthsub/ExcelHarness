@@ -31,8 +31,11 @@ import logging
 import os
 import shutil
 import socket
+import threading
 import time
 import yaml
+
+import psutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -63,6 +66,75 @@ RUNS_ROOT = BENCH_ROOT / "runs"
 
 
 # ---- helpers ---------------------------------------------------------------
+
+
+class _CellWatchdog:
+    """Hard wall-time enforcement at the OS level.
+
+    asyncio.wait_for is supposed to enforce the time_budget at the loop level,
+    but during network outages the Claude Agent SDK's receive_messages() can
+    park on a subprocess stdin/stdout read that doesn't surface
+    CancelledError cleanly — observed on 2026-04-23 when wifi loss left a
+    cell stuck for 2h+ past its 900s budget. This watchdog runs in a
+    daemon thread independent of the event loop and SIGKILLs the SDK's
+    subprocess tree when the deadline passes. Closing the SDK's stdout
+    is what finally unblocks the asyncio coroutine.
+
+    Targets only PIDs that appeared between snapshot() and arm() — i.e.,
+    the subprocess(es) this cell spawned. Other concurrent cells are
+    untouched.
+    """
+
+    def __init__(self, label: str, deadline_seconds: float):
+        self.label = label
+        self.deadline_seconds = deadline_seconds
+        self._before: set[int] = set()
+        self._target_pids: set[int] = set()
+        self._timer: threading.Timer | None = None
+        self._fired = False
+
+    @staticmethod
+    def _children() -> set[int]:
+        try:
+            return {p.pid for p in psutil.Process().children(recursive=True)}
+        except Exception:
+            return set()
+
+    def snapshot(self) -> None:
+        """Call BEFORE spawning the SDK client subprocess."""
+        self._before = self._children()
+
+    def arm(self) -> None:
+        """Call AFTER the SDK client has spawned. Captures new PIDs and starts the timer."""
+        after = self._children()
+        self._target_pids = after - self._before
+        log.info(f"watchdog[{self.label}]: tracking pids={sorted(self._target_pids)} "
+                 f"deadline={self.deadline_seconds:.0f}s")
+        self._timer = threading.Timer(self.deadline_seconds, self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _fire(self) -> None:
+        self._fired = True
+        log.warning(f"watchdog[{self.label}] FIRED — SIGKILL on {sorted(self._target_pids)}")
+        for pid in self._target_pids:
+            try:
+                proc = psutil.Process(pid)
+                # kill the whole subtree of this PID too
+                for child in proc.children(recursive=True):
+                    try: child.kill()
+                    except psutil.NoSuchProcess: pass
+                proc.kill()
+            except psutil.NoSuchProcess:
+                pass
+            except Exception as e:
+                log.warning(f"watchdog[{self.label}] kill {pid} failed: {e}")
+
+    def cancel(self) -> bool:
+        """Disarm the timer. Returns True if the watchdog had already fired."""
+        if self._timer is not None:
+            self._timer.cancel()
+        return self._fired
 
 
 def _pick_free_port() -> int:
@@ -477,9 +549,17 @@ async def run_headless(
             f"{context}"
         )
 
+        # Hard wall-time enforcement at the OS level. asyncio.wait_for can
+        # fail to cancel through the SDK's subprocess reads when the network
+        # is flaky; this watchdog SIGKILLs the SDK subprocess tree when the
+        # deadline passes — closing stdout, which unblocks the async read.
+        watchdog = _CellWatchdog(label=task_id, deadline_seconds=time_budget + 60)
+
         async def run_turns():
             nonlocal completed, terminated_reason, usage_totals
+            watchdog.snapshot()
             await client.connect()
+            watchdog.arm()
             try:
                 await client.query(initial_msg)
                 for turn in range(1, max_turns + 1):
@@ -530,10 +610,16 @@ async def run_headless(
                     pass
 
         try:
-            # Enforce the time budget at the asyncio level too
+            # Soft timeout: asyncio.wait_for cancels run_turns at +30s past budget.
             await asyncio.wait_for(run_turns(), timeout=time_budget + 30)
         except asyncio.TimeoutError:
             terminated_reason = "time_budget_exceeded"
+        finally:
+            # Hard timeout fallback: if the watchdog fired before we reached
+            # this finally, the SDK subprocess was force-killed at the OS
+            # level. Surface that distinct reason so it shows up in history.
+            if watchdog.cancel():
+                terminated_reason = "watchdog_killed_wall_budget"
 
     wall = time.time() - t_start
 

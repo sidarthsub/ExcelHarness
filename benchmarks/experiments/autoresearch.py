@@ -161,11 +161,26 @@ async def run_researcher_turn(iter_n: int, baseline: dict, visible_tasks: list[s
                   str(ROOT / "benchmarks")],
     )
 
-    # Seed the Researcher with the current state.
-    history_tail = ""
+    # Seed the Researcher with the current state. Build a compact summary
+    # of every prior iter (hypothesis + outcome) so it can avoid repeating
+    # ideas. Without this, the Researcher tends to re-propose the same
+    # changes — particularly attractive cost-pruning ones — that have
+    # already been tried.
+    prior_summaries = []
     if HISTORY_PATH.exists():
-        lines = HISTORY_PATH.read_text().splitlines()
-        history_tail = "\n".join(lines[-20:])
+        for line in HISTORY_PATH.read_text().splitlines():
+            try:
+                h = json.loads(line)
+            except Exception:
+                continue
+            verdict = "ACCEPTED" if h.get("accepted") else "REJECTED"
+            delta = h.get("paired_delta")
+            delta_str = f"Δ={delta:+.4f}" if delta is not None else "Δ=n/a"
+            prior_summaries.append(
+                f"- iter {h.get('iter')} [{verdict}, {delta_str}]: "
+                f"hypothesis={h.get('hypothesis_summary') or '(unrecorded)'!r}; "
+                f"outcome={h.get('reason', '')[:120]}"
+            )
 
     tasks_csv = ",".join(visible_tasks)
     eval_cmd = (
@@ -173,13 +188,20 @@ async def run_researcher_turn(iter_n: int, baseline: dict, visible_tasks: list[s
         f"--tasks {tasks_csv} --seeds 3 --label iter{iter_n}_visible"
     )
 
+    history_block = "\n".join(prior_summaries) if prior_summaries else "(no prior iters)"
+
     msg = (
         f"## Iteration {iter_n}\n\n"
         f"Current baseline corpus_loss: **{baseline['corpus_loss']:.4f}**\n"
         f"Per-task baseline:\n```json\n"
         f"{json.dumps(baseline.get('per_task', {}), indent=2)}\n```\n\n"
-        f"Recent history (tail ~20):\n```\n{history_tail or '(empty)'}\n```\n\n"
-        f"Proposal file: `{PROPOSALS_DIR}/iter_{iter_n}.md` (write this BEFORE editing any code)\n"
+        f"### Prior iterations — hypotheses tried so far\n"
+        f"{history_block}\n\n"
+        f"**Do not repeat these hypotheses.** If your idea overlaps a rejected proposal, "
+        f"either skip it or articulate why this new variant should differ.\n\n"
+        f"Proposal file: `{PROPOSALS_DIR}/iter_{iter_n}.md` (write this FIRST, before any Edit). "
+        f"Lead the file with a one-sentence headline starting `# iter {iter_n}: <headline>` — "
+        f"that line is recorded in history.jsonl and shown to future iters.\n"
         f"\n"
         f"**Visible tasks for this session:** {visible_tasks}\n"
         f"**Eval command to run (exactly this):**\n"
@@ -546,6 +568,15 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
         # noisy than raw corpus_loss comparison.
         paired = _paired_delta(baseline_eval, visible_label, visible_tasks) if visible_summary else None
 
+        # Diagnose any failure mode separately so history shows the real cause.
+        if not visible_summary:
+            failure_diag = "no_eval_data_in_store (researcher's eval subprocess didn't insert rows — usually a hang or crash)"
+        elif paired is None or paired.get("corpus_delta") is None:
+            missing = (paired or {}).get("missing_in_candidate") or []
+            failure_diag = f"paired_delta_uncomputable (missing per-task data; missing_tasks={missing})"
+        else:
+            failure_diag = None
+
         if visible_summary and paired and paired["corpus_delta"] is not None:
             new_loss = visible_summary["loss"]
             corpus_delta = paired["corpus_delta"]
@@ -585,14 +616,52 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
                               f"{HOLDOUT_EVERY_N_ACCEPTED - would_be_accepted_count} more accepts)")
                     accepted_since_last_holdout = would_be_accepted_count
         else:
-            reason = "researcher did not produce a visible eval"
+            reason = failure_diag or "researcher did not produce a visible eval"
+
+        # Extract the Researcher's hypothesis headline BEFORE the reject path's
+        # `git clean -fd` wipes the proposal file. Future iters read this from
+        # history.jsonl to avoid re-proposing the same idea.
+        hypothesis_summary = None
+        proposal_path = PROPOSALS_DIR / f"iter_{i}.md"
+        if proposal_path.exists():
+            text = proposal_path.read_text().strip()
+            for raw in text.splitlines():
+                ln = raw.strip()
+                if ln:
+                    hypothesis_summary = ln.lstrip("#").strip()[:240]
+                    break
+        if not hypothesis_summary and verdict_text:
+            for raw in verdict_text.splitlines():
+                ln = raw.strip()
+                if ln:
+                    hypothesis_summary = ln.lstrip("#").strip()[:240]
+                    break
 
         if accepted:
             sha = _commit_iteration(f"iter{i}", new_loss)
             baseline_loss = new_loss
+            # Rebuild per_task from the candidate's stored rows. Earlier we
+            # used `dict(visible_summary)`, which is the FLAT corpus_summary
+            # ({n, loss, accuracy, ...}) — not a {task_id: {...}} map.
+            # That broke _paired_delta on every subsequent iter because
+            # baseline_per_task.get(task_id) returned None for every task.
+            conn = store_mod.connect()
+            try:
+                accepted_per_task = store_mod.per_task_losses(conn, visible_label)
+            finally:
+                conn.close()
             baseline_eval = {
                 "corpus_loss": new_loss,
-                "per_task": dict(visible_summary),
+                "per_task": {
+                    t: {
+                        "n": row.get("n"),
+                        "loss": row.get("mean_loss"),
+                        "mean_accuracy": row.get("mean_accuracy"),
+                        "mean_cost_cold_usd": row.get("mean_cost_cold_usd"),
+                        "mean_wall_seconds": row.get("mean_wall_seconds"),
+                    }
+                    for t, row in accepted_per_task.items()
+                },
             }
             LAST_EVAL_PATH.write_text(json.dumps(baseline_eval, indent=2, default=str))
             _git("checkout", "main", check=False)
@@ -612,6 +681,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "accepted": accepted,
             "reason": reason,
+            "hypothesis_summary": hypothesis_summary,
             "baseline_loss": baseline_loss,
             "new_loss": new_loss,
             "paired_delta": (paired or {}).get("corpus_delta") if paired else None,
