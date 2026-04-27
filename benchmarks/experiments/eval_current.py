@@ -48,16 +48,20 @@ log = logging.getLogger("eval_current")
 # comes via the holdout gate, which is the only place t2 tasks run during iteration.
 CANARY_SET = ["t0_npv", "t1_inputs_from_term_sheet"]
 
-# Default fixed sets — used when rotation isn't requested. Sized for fast
-# iteration: 2 tasks × 2 seeds = 4 cells per visible eval (~5-7 min at parallel=3).
+# Default fixed sets — used when rotation isn't requested. 1 task per tier
+# (t0+t1+t2) so the Researcher gets paired-Δ signal across the full
+# difficulty curve. t2 in visible is what surfaces Planner/Oracle/Builder
+# pipeline gaps (those rarely manifest on t0/t1).
 VISIBLE_SET = [
     "t0_npv",
     "t1_inputs_from_term_sheet",
+    "t2_lbo_mini",
 ]
 
 HOLDOUT_SET = [
     "t0_dcf_terminal_value",
-    "t2_lbo_mini",
+    "t1_revenue_build",
+    "t2_cap_table_series_ab",
 ]
 
 # Full pools for rotation. Task tiers are roughly balanced for speed:
@@ -85,13 +89,18 @@ T1_VISIBLE_POOL = [
     "t1_returns_table",
 ]
 
+# t2 visible pool — t2_lbo_mini is the LBO-style task; the other two t2s
+# stay in holdout so promotion-gating still has unseen t2 coverage.
+T2_VISIBLE_POOL = [
+    "t2_lbo_mini",
+]
+
 # Combined view kept for backward-compat callers that want the full set.
-VISIBLE_POOL = T0_VISIBLE_POOL + T1_VISIBLE_POOL
+VISIBLE_POOL = T0_VISIBLE_POOL + T1_VISIBLE_POOL + T2_VISIBLE_POOL
 
 T0_HOLDOUT_POOL = ["t0_dcf_terminal_value"]
 T1_HOLDOUT_POOL = ["t1_revenue_build"]
 T2_HOLDOUT_POOL = [
-    "t2_lbo_mini",
     "t2_cap_table_series_ab",
     "t2_safe_convert_series_a",
 ]
@@ -101,13 +110,15 @@ HOLDOUT_POOL = T0_HOLDOUT_POOL + T1_HOLDOUT_POOL + T2_HOLDOUT_POOL
 
 
 def rotate_sets(seed: int | None,
-                n_visible_t0: int = 1, n_visible_t1: int = 1,
+                n_visible_t0: int = 1, n_visible_t1: int = 1, n_visible_t2: int = 1,
                 n_holdout_t0: int = 1, n_holdout_t1: int = 1,
                 n_holdout_t2: int = 1) -> tuple[list[str], list[str]]:
     """Pick visible and holdout subsets, enforcing tier mix in both.
 
-    Visible: 1 t0 + 1 t1 — broader signal than two of the same tier.
-    Holdout: 1 t0 + 1 t1 + 1 t2 — guarantees t2 coverage in the
+    Visible: 1 t0 + 1 t1 + 1 t2 — full difficulty range so the Researcher's
+    paired-Δ signal includes pipeline failures (Planner/Oracle/Builder
+    fragility) that only manifest on t2.
+    Holdout: 1 t0 + 1 t1 + 1 t2 — guarantees disjoint coverage in the
     promotion-gate eval that the Researcher never directly sees.
 
     Deterministic given `seed`. Visible and holdout are disjoint — a task
@@ -118,6 +129,7 @@ def rotate_sets(seed: int | None,
     visible = (
         rng.sample(T0_VISIBLE_POOL, n_visible_t0)
         + rng.sample(T1_VISIBLE_POOL, n_visible_t1)
+        + rng.sample(T2_VISIBLE_POOL, n_visible_t2)
     )
     remaining_t0 = [t for t in T0_HOLDOUT_POOL if t not in visible]
     remaining_t1 = [t for t in T1_HOLDOUT_POOL if t not in visible]

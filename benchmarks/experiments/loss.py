@@ -51,6 +51,30 @@ COST_REFERENCE_USD = 0.20  # log anchor — runs cheaper than this contribute ze
 TIME_LOG_WEIGHT = 0.05     # time_loss = max(0, 0.05 * ln(wall / 60))
 TIME_REFERENCE_S = 60.0    # log anchor — runs faster than this contribute zero time loss
 
+# Per-tier corpus weighting. A 0.1 reduction on t2 is worth ~2.5× a 0.1
+# reduction on t0 in the corpus mean. Pulls the Researcher's gradient
+# toward architectural fixes that help t2 (pipeline-level: Planner/Oracle/
+# Builder fragility) over micro-tweaks on already-easy t0/t1 tasks.
+TIER_WEIGHTS = {0: 1.0, 1: 1.5, 2: 2.5}
+
+
+def _tier_from_task_id(task_id: str | None) -> int:
+    """Extract tier from a task_id like 't0_npv', 't1_returns_table',
+    't2_lbo_mini', 't0ref_*'. Falls back to 1 (the median) if unknown."""
+    if not task_id:
+        return 1
+    if task_id.startswith("t0"):
+        return 0
+    if task_id.startswith("t1"):
+        return 1
+    if task_id.startswith("t2"):
+        return 2
+    return 1
+
+
+def tier_weight(task_id: str | None) -> float:
+    return TIER_WEIGHTS.get(_tier_from_task_id(task_id), 1.0)
+
 
 def cold_cost_usd(usage: dict[str, Any], model: str) -> float:
     """Cold-equivalent USD cost: every input-class token priced at the plain input rate.
@@ -121,7 +145,13 @@ def per_run_loss(result: dict) -> dict[str, float]:
 
 
 def corpus_loss(results: list[dict]) -> dict[str, Any]:
-    """Aggregate per-run losses into a single scalar plus diagnostics."""
+    """Aggregate per-run losses into a tier-weighted mean plus diagnostics.
+
+    corpus_loss = Σ(w_i × loss_i) / Σ(w_i), where w_i = TIER_WEIGHTS[tier_i].
+    Without weighting, t2 fragility (acc=0.3, loss=1.6) gets averaged
+    with t0 perfection (acc=1.0, loss=0) and the corpus number understates
+    where the real headroom is.
+    """
     if not results:
         return {"corpus_loss": float("inf"), "n": 0, "per_run": []}
     per = []
@@ -132,10 +162,12 @@ def corpus_loss(results: list[dict]) -> dict[str, Any]:
         row["accuracy"] = r.get("accuracy")
         row["wall_seconds"] = r.get("wall_seconds")
         row["completed"] = r.get("completed")
+        row["tier_weight"] = tier_weight(r.get("task_id"))
         per.append(row)
-    mean_loss = sum(p["loss"] for p in per) / len(per)
+    weight_sum = sum(p["tier_weight"] for p in per) or 1.0
+    weighted_loss = sum(p["loss"] * p["tier_weight"] for p in per) / weight_sum
     return {
-        "corpus_loss": mean_loss,
+        "corpus_loss": weighted_loss,
         "n": len(per),
         "mean_accuracy": sum(p["accuracy"] or 0.0 for p in per) / len(per),
         "mean_cost_cold_usd": sum(p["cost_cold_usd"] for p in per) / len(per),

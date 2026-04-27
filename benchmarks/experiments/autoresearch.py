@@ -342,21 +342,27 @@ def _load_latest_eval_for(label: str) -> dict | None:
 
 
 def _paired_delta(baseline: dict, candidate_label: str, tasks: list[str]) -> dict:
-    """Compare candidate eval to baseline using per-task paired deltas.
+    """Compare candidate eval to baseline using per-task paired deltas,
+    weighted by tier so the corpus delta tracks the corpus_loss objective.
 
     For each task in `tasks`:
         delta_t = mean(candidate_loss_t) - mean(baseline_loss_t)
-    Then corpus_delta = mean of delta_t across tasks.
+        w_t    = TIER_WEIGHTS[tier_of(task_t)]   # 1.0 / 1.5 / 2.5
+    Then corpus_delta = Σ(w_t × delta_t) / Σ(w_t).
 
-    Task-level means cancel out the (huge) variance from task difficulty,
-    so this number is MUCH more stable than (candidate_flat_mean - baseline_flat_mean).
+    Task-level means cancel out the (huge) variance from task difficulty;
+    tier weighting then ensures a t2 improvement moves the gate harder
+    than an equal-magnitude t0 improvement — same weighting used by
+    `loss.corpus_loss`, so promotion gate and objective stay aligned.
 
     Returns {
         "corpus_delta": float,
-        "per_task": {task: {baseline_loss, new_loss, delta}},
-        "missing_in_candidate": [task_id,...],  # tasks with no candidate rows
+        "per_task": {task: {baseline_loss, new_loss, delta, weight}},
+        "missing_in_candidate": [task_id,...],
     }
     """
+    from benchmarks.experiments.loss import tier_weight as _tier_weight
+
     baseline_per_task = (baseline or {}).get("per_task") or {}
     conn = store_mod.connect()
     try:
@@ -365,29 +371,38 @@ def _paired_delta(baseline: dict, candidate_label: str, tasks: list[str]) -> dic
         conn.close()
 
     rows: dict[str, dict] = {}
-    deltas: list[float] = []
+    weighted_deltas: list[tuple[float, float]] = []  # (delta, weight)
     missing = []
     for task_id in tasks:
         b_row = baseline_per_task.get(task_id) or {}
         c_row = candidate_per_task.get(task_id) or {}
         b_loss = b_row.get("loss")
         c_loss = c_row.get("mean_loss")
+        w = _tier_weight(task_id)
         if b_loss is None or c_loss is None:
             missing.append(task_id)
-            rows[task_id] = {"baseline_loss": b_loss, "new_loss": c_loss, "delta": None}
+            rows[task_id] = {"baseline_loss": b_loss, "new_loss": c_loss,
+                             "delta": None, "weight": w}
             continue
         d = c_loss - b_loss
-        deltas.append(d)
+        weighted_deltas.append((d, w))
         rows[task_id] = {"baseline_loss": round(b_loss, 4),
                          "new_loss": round(c_loss, 4),
                          "delta": round(d, 4),
+                         "weight": w,
                          "n_candidate": c_row.get("n")}
 
+    if weighted_deltas:
+        wsum = sum(w for _, w in weighted_deltas)
+        corpus_delta = sum(d * w for d, w in weighted_deltas) / wsum
+    else:
+        corpus_delta = None
+
     return {
-        "corpus_delta": (sum(deltas) / len(deltas)) if deltas else None,
+        "corpus_delta": corpus_delta,
         "per_task": rows,
         "missing_in_candidate": missing,
-        "n_tasks_compared": len(deltas),
+        "n_tasks_compared": len(weighted_deltas),
     }
 
 
@@ -604,8 +619,10 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
                   seed=seed)
 
     # Baseline: try to reuse existing store rows before spending on a fresh eval.
-    # min_seeds=1 is intentional — trading a bit of noise for ~15min of re-eval time.
-    baseline_eval = _try_reuse_baseline("baseline", visible_tasks, min_seeds=1)
+    # min_seeds=3 to match the iter visible eval — fewer-seed reuse made
+    # paired comparisons noisy (1-seed baseline vs 3-seed candidate had
+    # ~0.5 pseudo-deltas on accuracy alone).
+    baseline_eval = _try_reuse_baseline("baseline", visible_tasks, min_seeds=3)
     if baseline_eval is not None:
         log.info(f"reusing stored baseline — corpus_loss={baseline_eval['corpus_loss']:.4f} "
                  f"(n={baseline_eval['n_runs']} over {len(visible_tasks)} tasks)")
@@ -624,7 +641,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
     holdout_baseline = None
     if not skip_holdout:
         _write_status(phase="holdout_baseline")
-        holdout_baseline = _try_reuse_baseline("holdout_", holdout_tasks, min_seeds=1)
+        holdout_baseline = _try_reuse_baseline("holdout_", holdout_tasks, min_seeds=3)
         if holdout_baseline is not None:
             log.info(f"reusing stored holdout baseline — "
                      f"corpus_loss={holdout_baseline['corpus_loss']:.4f}")

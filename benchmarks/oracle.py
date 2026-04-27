@@ -37,6 +37,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -115,9 +116,44 @@ def _save_cache(path: Path, cache: dict) -> None:
     path.write_text(json.dumps(cache, indent=2, sort_keys=True))
 
 
-def _seed_match(entry_matches: list[str], qtext: str) -> bool:
+_TOKEN_RE = re.compile(r"[a-z]+")
+
+
+def _id_tokens(s: str, min_len: int = 3) -> set[str]:
+    """Extract length-≥min_len lowercase alphabetic tokens from a snake_case
+    or whitespace-delimited phrase. Used to compare concept-overlap between
+    a question's id and a seed entry's identifying terms."""
+    return {t for t in _TOKEN_RE.findall(s.lower()) if len(t) >= min_len}
+
+
+def _seed_match(entry: dict, qtext: str, qid: str) -> bool:
+    """Match a question to a seed entry only when both signals agree:
+
+    1. One of the seed's `matches:` phrases appears as a substring in the
+       question text.
+    2. The question's id shares a concept token with the seed's id or
+       one of its match phrases.
+
+    Without (2), incidental keywords in the question text would silently
+    bind a seed's answer to the wrong question id. Concretely: an
+    `mezz_interest_type` question whose text mentions "subtracted from
+    FCF" would inherit the `fcf_definition` seed's answer — observed
+    on t2_lbo_mini seed 03645c.
+
+    If the qid has no concept tokens (length-≥3 alphabetic; e.g. "q1"),
+    fall back to phrase-only matching since there's nothing to align on.
+    """
+    matches = entry.get("matches") or []
     ql = qtext.lower()
-    return any(m.lower() in ql for m in (entry_matches or []))
+    if not any(m.lower() in ql for m in matches):
+        return False
+    qid_tokens = _id_tokens(qid)
+    if not qid_tokens:
+        return True
+    seed_tokens = _id_tokens(entry.get("id", ""))
+    for m in matches:
+        seed_tokens |= _id_tokens(m)
+    return bool(qid_tokens & seed_tokens)
 
 
 async def _llm_resolve(pending: list[dict], cfg: OracleConfig) -> tuple[str, dict]:
@@ -199,7 +235,7 @@ async def resolve_questions(
         # seed by fuzzy phrase
         seed_fuzzy = next(
             (s for s in cfg.seed_entries
-             if _seed_match(s.get("matches", []), qtext)),
+             if _seed_match(s, qtext, qid)),
             None,
         )
         if seed_fuzzy and "answer" in seed_fuzzy:
