@@ -229,6 +229,43 @@ HTML = """<!doctype html>
   .bar .fill.ok { background: var(--ok); }
   .bar .task { color: var(--ink-dim); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
   .bar .v { text-align: right; font-variant-numeric: tabular-nums; }
+  /* Hypothesis-forward presentation */
+  .hypothesis-banner {
+    background: linear-gradient(135deg, var(--panel) 0%, var(--panel-2) 100%);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 16px;
+  }
+  .hypothesis-banner.accept { border-left-color: var(--ok); }
+  .hypothesis-banner.reject { border-left-color: var(--bad); }
+  .hypothesis-banner.researching { border-left-color: var(--accent); }
+  .hypothesis-banner .label {
+    font-size: 11px; color: var(--ink-dim); text-transform: uppercase;
+    letter-spacing: .08em; font-weight: 600;
+  }
+  .hypothesis-banner .hypothesis {
+    font-size: 16px; font-weight: 500; color: var(--ink); margin: 6px 0 4px;
+    line-height: 1.4;
+  }
+  .hypothesis-banner .meta {
+    font-size: 12px; color: var(--ink-dim); margin-top: 4px;
+  }
+  td.hyp {
+    max-width: 420px; font-size: 12px; color: var(--ink);
+    line-height: 1.35;
+  }
+  td.hyp .truncated {
+    overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  details.proposal-details summary {
+    cursor: pointer; color: var(--ink-dim); font-size: 12px;
+    margin-top: 8px; user-select: none;
+  }
+  details.proposal-details summary:hover { color: var(--ink); }
+  details[open] summary { color: var(--ink); }
 </style>
 
 <h1>autoresearch <span id=live></span></h1>
@@ -247,6 +284,16 @@ HTML = """<!doctype html>
   <div class=kpi><div class=l>accuracy</div><div class=v id=kpi-acc>—</div><div class=d>mean across visible</div></div>
 </div>
 
+<div id=hyp-banner class=hypothesis-banner>
+  <div class=label id=hyp-label>current hypothesis</div>
+  <div class=hypothesis id=hyp-text>(no iteration in flight)</div>
+  <div class=meta id=hyp-meta></div>
+  <details class=proposal-details>
+    <summary>show full proposal</summary>
+    <pre class=proposal id=proposal>(no proposal yet)</pre>
+  </details>
+</div>
+
 <div class=grid>
   <div class=panel>
     <h2>loss curve</h2>
@@ -260,22 +307,16 @@ HTML = """<!doctype html>
 
 <div style="height:16px"></div>
 
-<div class=grid>
-  <div class=panel>
-    <h2>iteration history</h2>
-    <table id=hist-table>
-      <thead><tr>
-        <th>iter</th><th>decision</th><th class=num>loss</th><th class=num>Δ</th>
-        <th class=num>wall</th><th class=num>spent</th><th>reason</th>
-      </tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-  <div class=panel>
-    <h2>current iter proposal</h2>
-    <div id=current-meta class=muted style="margin-bottom:8px"></div>
-    <pre class=proposal id=proposal>(no iteration in flight)</pre>
-  </div>
+<div class=panel>
+  <h2>iteration history</h2>
+  <table id=hist-table>
+    <thead><tr>
+      <th>iter</th><th>decision</th><th>hypothesis</th>
+      <th class=num>Δ</th><th class=num>loss</th>
+      <th class=num>wall</th><th class=num>spent</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
 </div>
 
 <div style="height:16px"></div>
@@ -379,40 +420,80 @@ async function refresh() {
     }
   }
 
-  // History table
+  // History table — hypothesis is the headline column.
   const hbody = document.querySelector("#hist-table tbody");
   hbody.innerHTML = "";
   for (const h of history.slice().reverse()) {
     const tr = document.createElement("tr");
-    const delta = (h.new_loss != null && h.baseline_loss != null)
-      ? (h.new_loss - h.baseline_loss) : null;
+    const delta = h.paired_delta != null ? h.paired_delta
+                : ((h.new_loss != null && h.baseline_loss != null)
+                    ? (h.new_loss - h.baseline_loss) : null);
+    const hyp = h.hypothesis_summary || "(unrecorded)";
+    const reason = (h.reason || "").replace(/"/g, '&quot;');
     tr.innerHTML = `
       <td>${h.iter}</td>
       <td class="${h.accepted ? 'accept' : 'reject'}">${h.accepted ? 'ACCEPT' : 'REJECT'}</td>
-      <td class=num>${fmt(h.new_loss, 4)}</td>
+      <td class=hyp title="${reason}"><div class=truncated>${hyp.replace(/</g,'&lt;')}</div></td>
       <td class=num>${delta == null ? '—' : (delta >= 0 ? '+' : '') + delta.toFixed(4)}</td>
+      <td class=num>${fmt(h.new_loss, 4)}</td>
       <td class=num>${fmtS(h.wall_seconds)}</td>
-      <td class=num>${fmtD(h.spent_usd)}</td>
-      <td class=muted>${(h.reason || '').slice(0, 80)}</td>`;
+      <td class=num>${fmtD(h.spent_usd)}</td>`;
     hbody.appendChild(tr);
   }
 
-  // Current proposal
+  // Hypothesis banner — the most prominent surface. Shows the current
+  // iter's hypothesis when in flight, or the last completed iter's
+  // hypothesis between iters.
+  const banner = $("hyp-banner");
   const curIter = status.iter;
-  $("current-meta").textContent = (phase === "researching" || phase === "evaluating")
-    ? `iter ${curIter} · ${phase}` : '';
-  if (phase === "researching" || phase === "evaluating") {
-    try {
-      const txt = await (await fetch("/api/proposal?iter=" + curIter)).text();
-      $("proposal").textContent = txt || "(proposal not written yet)";
-    } catch { /* ignore */ }
+  let bannerIter = null;
+  let bannerKind = "researching";  // researching | accept | reject
+  let bannerLabel = "";
+  let bannerHyp = "";
+  let bannerMeta = "";
+  let bannerProposalIter = null;
+
+  if (phase === "researching" || phase === "evaluating" || phase === "holdout_gate") {
+    bannerIter = curIter;
+    bannerKind = "researching";
+    bannerLabel = `iter ${curIter} · ${phase}`;
+    bannerHyp = "(hypothesis in progress…)";
+    bannerProposalIter = curIter;
   } else if (history.length) {
     const last = history[history.length - 1];
+    bannerIter = last.iter;
+    bannerKind = last.accepted ? "accept" : "reject";
+    bannerLabel = `iter ${last.iter} · ${last.accepted ? 'ACCEPTED' : 'rejected'}`;
+    bannerHyp = last.hypothesis_summary || "(unrecorded)";
+    const d = last.paired_delta;
+    bannerMeta = (d != null ? `paired Δ=${d>=0?'+':''}${d.toFixed(4)}` : "")
+               + (last.reason ? ` · ${last.reason}` : "");
+    bannerProposalIter = last.iter;
+  } else {
+    bannerLabel = "no iteration yet";
+    bannerHyp = "(waiting for first iter)";
+  }
+
+  banner.className = "hypothesis-banner " + bannerKind;
+  $("hyp-label").textContent = bannerLabel;
+  $("hyp-text").textContent = bannerHyp;
+  $("hyp-meta").textContent = bannerMeta;
+
+  if (bannerProposalIter != null) {
     try {
-      const txt = await (await fetch("/api/proposal?iter=" + last.iter)).text();
-      $("proposal").textContent = txt || "(no proposal file)";
-      $("current-meta").textContent = `iter ${last.iter} (last) · ${last.accepted ? 'accepted' : 'rejected'}`;
+      const txt = await (await fetch("/api/proposal?iter=" + bannerProposalIter)).text();
+      $("proposal").textContent = txt || "(proposal file not written yet)";
+      // If the banner hyp is a placeholder and the proposal file has a real
+      // headline, lift it into the banner so the user sees it ASAP.
+      if (bannerHyp.startsWith("(hypothesis") && txt) {
+        const firstLine = txt.split("\n").find(l => l.trim());
+        if (firstLine) {
+          $("hyp-text").textContent = firstLine.replace(/^#+\s*/, "").slice(0, 240);
+        }
+      }
     } catch { /* ignore */ }
+  } else {
+    $("proposal").textContent = "(no proposal yet)";
   }
 
   // Recent runs
