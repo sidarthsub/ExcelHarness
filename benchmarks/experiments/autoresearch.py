@@ -553,6 +553,16 @@ def _install_signal_handlers() -> None:
         except Exception:
             pass
 
+    # Ignore SIGHUP. This loop runs for hours unattended; if the launching
+    # terminal closes (or the IDE/Claude session that spawned it exits),
+    # Python's default SIGHUP action would kill the process without
+    # running our handler — leaving status frozen and the pidfile
+    # orphaned. Explicit shutdown happens via shutdown.py (SIGTERM).
+    try:
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    except (ValueError, OSError):
+        pass
+
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             signal.signal(sig, _handler)
@@ -829,11 +839,25 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
 
 
 def _main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    # File handler — always on so a record survives terminal close /
+    # parent death even if the console handler's pipe is broken. The
+    # last run that died on SIGHUP left no log on disk, which made
+    # post-mortem painful.
+    log_path = BENCH_ROOT / "experiments" / "autoresearch.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(log_path, mode="a")
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
+    log.info(f"logging to file: {log_path}")
     ap = argparse.ArgumentParser(prog="benchmarks.experiments.autoresearch")
     ap.add_argument("--max-iters", type=int, default=10)
     ap.add_argument("--max-dollars", type=float, default=50.0)
