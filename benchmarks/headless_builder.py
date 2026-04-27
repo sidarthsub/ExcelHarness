@@ -206,6 +206,7 @@ async def run_planner_phase(
         permission_mode="bypassPermissions",
         cwd=str(ROOT),
         model=model,
+        max_thinking_tokens=1024,  # cap extended thinking; spec-writing doesn't need deep reasoning
         add_dirs=[str(task_dir), str(run_dir)],
     )
     client = ClaudeSDKClient(options=opts)
@@ -368,6 +369,24 @@ def _results_contract_block(task_meta: dict, candidate_dir: Path) -> str:
     return "\n\n---\n\n".join(["\n".join(lines), ""])
 
 
+def _has_text_input_files(task_dir: Path) -> bool:
+    """Return True if the task has any text source documents in inputs/.
+
+    Production-safe: reads actual task content, not benchmark metadata.
+    Tasks with source documents (term sheets, financial statements, etc.)
+    benefit from the full Planner pass that summarises them into a spec.
+    Tasks with no source documents (pure-formula calculations) run faster
+    and cheaper on the Haiku stack without the Planner overhead.
+    """
+    inputs_dir = task_dir / "inputs"
+    if not inputs_dir.exists():
+        return False
+    return any(
+        f.is_file() and f.suffix.lower() in (".md", ".txt")
+        for f in inputs_dir.iterdir()
+    )
+
+
 def _describe_stub(stub_path: Path) -> str:
     """Describe the stub's contents as text so the Builder can recreate it.
 
@@ -481,6 +500,13 @@ async def run_headless(
 
     completed = False
     terminated_reason = "unknown"
+
+    # Route simple tasks (no text source documents) to the lighter Haiku stack.
+    # Without source documents to summarise, the Planner adds overhead without benefit.
+    # This check reads actual task content and is production-safe.
+    if not _has_text_input_files(task_dir):
+        model = "haiku"
+        skip_planner = True
 
     # --- Planner + Oracle phase ---
     spec: dict | None = None
