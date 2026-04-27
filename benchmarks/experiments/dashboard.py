@@ -369,6 +369,57 @@ async function refresh() {
   $("live").innerHTML = (phase === "researching" || phase === "evaluating" || phase === "baseline")
     ? '<span class="live-dot"></span>' : '';
 
+  // Hypothesis banner FIRST — if anything below this throws (chart lib,
+  // table render, etc.) the banner is still updated. The hypothesis is
+  // the single most-watched element and shouldn't depend on the rest.
+  try {
+    const banner = $("hyp-banner");
+    const curIter = status.iter;
+    let bannerKind = "researching";
+    let bannerLabel = "no iteration yet";
+    let bannerHyp = "(waiting for first iter)";
+    let bannerMeta = "";
+    let bannerProposalIter = null;
+
+    if (phase === "researching" || phase === "evaluating" || phase === "holdout_gate" || phase === "baseline" || phase === "holdout_baseline") {
+      bannerKind = "researching";
+      bannerLabel = `iter ${curIter ?? 0} · ${phase}`;
+      bannerHyp = "(hypothesis in progress…)";
+      if (curIter && curIter >= 1) bannerProposalIter = curIter;
+    } else if (history.length) {
+      const last = history[history.length - 1];
+      bannerKind = last.accepted ? "accept" : "reject";
+      bannerLabel = `iter ${last.iter} · ${last.accepted ? 'ACCEPTED' : 'rejected'}`;
+      bannerHyp = last.hypothesis_summary || "(unrecorded)";
+      const d = last.paired_delta;
+      bannerMeta = (d != null ? `paired Δ=${d>=0?'+':''}${d.toFixed(4)}` : "")
+                 + (last.reason ? ` · ${last.reason}` : "");
+      bannerProposalIter = last.iter;
+    }
+
+    banner.className = "hypothesis-banner " + bannerKind;
+    $("hyp-label").textContent = bannerLabel;
+    $("hyp-text").textContent = bannerHyp;
+    $("hyp-meta").textContent = bannerMeta;
+
+    if (bannerProposalIter != null) {
+      try {
+        const txt = await (await fetch("/api/proposal?iter=" + bannerProposalIter)).text();
+        $("proposal").textContent = txt || "(proposal file not written yet)";
+        if (bannerHyp.startsWith("(hypothesis") && txt) {
+          const firstLine = txt.split("\n").find(l => l.trim());
+          if (firstLine) {
+            $("hyp-text").textContent = firstLine.replace(/^#+\s*/, "").slice(0, 240);
+          }
+        }
+      } catch (e) { /* proposal endpoint may not have content yet */ }
+    } else {
+      $("proposal").textContent = "(no proposal yet)";
+    }
+  } catch (e) {
+    console.error("hypothesis banner update failed:", e);
+  }
+
   // KPIs
   const lastAcceptedLoss = (history.filter(h => h.accepted).slice(-1)[0] || {}).new_loss;
   const currentLoss = (baseline.corpus_loss != null) ? baseline.corpus_loss : lastAcceptedLoss;
@@ -441,60 +492,9 @@ async function refresh() {
     hbody.appendChild(tr);
   }
 
-  // Hypothesis banner — the most prominent surface. Shows the current
-  // iter's hypothesis when in flight, or the last completed iter's
-  // hypothesis between iters.
-  const banner = $("hyp-banner");
-  const curIter = status.iter;
-  let bannerIter = null;
-  let bannerKind = "researching";  // researching | accept | reject
-  let bannerLabel = "";
-  let bannerHyp = "";
-  let bannerMeta = "";
-  let bannerProposalIter = null;
-
-  if (phase === "researching" || phase === "evaluating" || phase === "holdout_gate") {
-    bannerIter = curIter;
-    bannerKind = "researching";
-    bannerLabel = `iter ${curIter} · ${phase}`;
-    bannerHyp = "(hypothesis in progress…)";
-    bannerProposalIter = curIter;
-  } else if (history.length) {
-    const last = history[history.length - 1];
-    bannerIter = last.iter;
-    bannerKind = last.accepted ? "accept" : "reject";
-    bannerLabel = `iter ${last.iter} · ${last.accepted ? 'ACCEPTED' : 'rejected'}`;
-    bannerHyp = last.hypothesis_summary || "(unrecorded)";
-    const d = last.paired_delta;
-    bannerMeta = (d != null ? `paired Δ=${d>=0?'+':''}${d.toFixed(4)}` : "")
-               + (last.reason ? ` · ${last.reason}` : "");
-    bannerProposalIter = last.iter;
-  } else {
-    bannerLabel = "no iteration yet";
-    bannerHyp = "(waiting for first iter)";
-  }
-
-  banner.className = "hypothesis-banner " + bannerKind;
-  $("hyp-label").textContent = bannerLabel;
-  $("hyp-text").textContent = bannerHyp;
-  $("hyp-meta").textContent = bannerMeta;
-
-  if (bannerProposalIter != null) {
-    try {
-      const txt = await (await fetch("/api/proposal?iter=" + bannerProposalIter)).text();
-      $("proposal").textContent = txt || "(proposal file not written yet)";
-      // If the banner hyp is a placeholder and the proposal file has a real
-      // headline, lift it into the banner so the user sees it ASAP.
-      if (bannerHyp.startsWith("(hypothesis") && txt) {
-        const firstLine = txt.split("\n").find(l => l.trim());
-        if (firstLine) {
-          $("hyp-text").textContent = firstLine.replace(/^#+\s*/, "").slice(0, 240);
-        }
-      }
-    } catch { /* ignore */ }
-  } else {
-    $("proposal").textContent = "(no proposal yet)";
-  }
+  // (Hypothesis banner is updated above, before any potentially-failing
+  // chart/table renders. Keeping it there ensures the most-watched UI
+  // element doesn't get skipped on JS errors elsewhere.)
 
   // Recent runs
   const rbody = document.querySelector("#runs-table tbody");
