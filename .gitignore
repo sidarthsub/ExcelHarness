@@ -25,3 +25,4 @@ __pycache__/
 
 # Office sideload temp files
 /tmp/Excel add-in *.xlsx
+benchmarks/experiments/*.db
