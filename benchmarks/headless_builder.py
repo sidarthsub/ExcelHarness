@@ -423,9 +423,14 @@ def build_builder_context(task_dir: Path, task_meta: dict, spec: dict | None = N
             parts.append(_describe_stub(stub_path))
     inputs_dir = task_dir / "inputs"
     if inputs_dir.exists():
-        for f in sorted(inputs_dir.iterdir()):
-            if f.is_file() and f.suffix.lower() in (".md", ".txt"):
-                parts.append(f"## Input document: {f.name}\n{_read_text(f)}")
+        # When a Planner spec is available it should capture all info from the
+        # raw input documents (per the Planner's design goal). Including the raw
+        # docs anyway inflates every Builder turn's cold-input token count.
+        # Only include them in the fallback (no-spec) path.
+        if spec is None:
+            for f in sorted(inputs_dir.iterdir()):
+                if f.is_file() and f.suffix.lower() in (".md", ".txt"):
+                    parts.append(f"## Input document: {f.name}\n{_read_text(f)}")
         xlsx_list = [str(f) for f in sorted(inputs_dir.glob("*.xlsx"))]
         if xlsx_list:
             parts.append(
