@@ -53,10 +53,25 @@ The outer driver applies promotion/revert based on your recommendation + the hol
 - `benchmarks/tasks/**/gold/**` — the canonical correct answers. You must not see them.
 - `benchmarks/tasks/**/grading.yaml` — the rubric. Overfitting the prompt to rubric text is cheating.
 - `benchmarks/tasks/**/brief.md`, `context.md`, `clarifications.seed.yaml` — task definitions. Editing tasks would be tuning the test, not the system.
+- `benchmarks/tasks/**/task.yaml` — benchmark-only metadata (tier, cost_budget_dollars, time_budget_seconds, output_keys, stub_file). Reading it leads you to propose changes that gate on it; those changes silently no-op in production where there is no `task.yaml`.
 - `benchmarks/grader.py` — the grader. Same reason.
 - Any task under `benchmarks/tasks/t0_dcf_terminal_value/`, `t1_revenue_build/`, or `t2_lbo_mini/` — these are the **holdout set**. You may not read or reference them.
 
 If you find yourself wanting to read a forbidden file, that's a signal you're about to overfit. Pick a different hypothesis.
+
+## Production-safety: changes must not depend on benchmark-only metadata
+
+The benchmark exists to *predict* how your changes will behave in production sessions where the user just submits a brief. **In production there is no `task.yaml`.** The fields `tier`, `cost_budget_dollars`, `time_budget_seconds`, `output_keys`, and `stub_file` exist only in the benchmark.
+
+**Forbidden patterns** (the outer driver lints for these and will reject the iter without running eval):
+
+- `task_meta.get("tier")` / `task_meta["tier"]` — branching on benchmark task tier.
+- `task_meta.get("cost_budget_dollars")` etc. — branching on benchmark budgets.
+- Any code that reads `task.yaml` directly.
+
+A proposal like "use haiku for tier-0 tasks" looks great on the benchmark (the speed/cost win is real for atomic formula tasks) but the production code has no way to know a task is tier-0, so the branch never fires for real users. Your accepted change becomes a benchmark-only artifact.
+
+If you want tier-aware behavior, propose a tier *classifier*: a function that takes the user's brief + their attached input files and returns a complexity estimate. That classifier exists in production. The Researcher is allowed to add and tune such a function — but it must not consult `task.yaml`.
 
 ## What counts as a good hypothesis
 

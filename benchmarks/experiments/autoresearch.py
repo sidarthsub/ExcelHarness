@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import time
@@ -93,6 +94,48 @@ def _git_sha() -> str:
 def _git_working_tree_clean() -> bool:
     out = _git("status", "--porcelain")
     return out == ""
+
+
+# Patterns that flag a tier-leak: the change introduces a branch keyed on
+# benchmark-only metadata that won't exist in production sessions. Linted
+# against the iter's diff (added lines only) BEFORE running the visible
+# eval, so we don't waste eval cost on a change that's already disqualified.
+_TIER_LEAK_PATTERNS = [
+    # Lookups into task_meta for benchmark-only fields.
+    re.compile(r'task_meta\s*\.\s*get\s*\(\s*["\'](?:tier|cost_budget_dollars|time_budget_seconds|output_keys|stub_file)["\']'),
+    re.compile(r'task_meta\s*\[\s*["\'](?:tier|cost_budget_dollars|time_budget_seconds|output_keys|stub_file)["\']'),
+    # Direct task.yaml reads.
+    re.compile(r'task\.yaml\b'),
+    re.compile(r'yaml\.safe_load\([^)]*task\b'),
+]
+
+
+def _check_for_tier_leaks(branch: str) -> str | None:
+    """Scan added lines in this iter's diff for benchmark-only metadata refs.
+
+    Returns a reject reason string, or None if the diff is clean. Only
+    inspects files in the Researcher's editable scope so legitimate reads
+    of task_meta inside files we own (we read tier in headless_builder.py
+    just for the result.json metadata) don't false-positive — those lines
+    aren't ADDED in this iter's diff.
+    """
+    scope = [
+        "agents/builder_v3.md",
+        "agents/planner_v3.md",
+        "benchmarks/headless_builder.py",
+        "benchmarks/pseudo_bridge.py",
+    ]
+    diff = _git("diff", "main", "--unified=0", "--", *scope, check=False)
+    for line in diff.splitlines():
+        # Only inspect ADDED lines (not '+++' diff headers).
+        if not line.startswith("+") or line.startswith("+++"):
+            continue
+        for pat in _TIER_LEAK_PATTERNS:
+            if pat.search(line):
+                return (f"tier_leak: pattern {pat.pattern!r} introduced — "
+                        f"change depends on benchmark-only metadata that won't "
+                        f"exist in production. Line: {line[:120]!r}")
+    return None
 
 
 def _revert_working_tree() -> None:
@@ -564,20 +607,29 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
         new_loss = None
         ran_holdout_this_iter = False
 
-        # Paired-by-task comparison: per-task delta, averaged. Much less
-        # noisy than raw corpus_loss comparison.
-        paired = _paired_delta(baseline_eval, visible_label, visible_tasks) if visible_summary else None
-
-        # Diagnose any failure mode separately so history shows the real cause.
-        if not visible_summary:
-            failure_diag = "no_eval_data_in_store (researcher's eval subprocess didn't insert rows — usually a hang or crash)"
-        elif paired is None or paired.get("corpus_delta") is None:
-            missing = (paired or {}).get("missing_in_candidate") or []
-            failure_diag = f"paired_delta_uncomputable (missing per-task data; missing_tasks={missing})"
+        # Tier-leak lint: reject before paired-delta math if the diff
+        # introduces branches keyed on benchmark-only metadata. Saves
+        # eval cost on iters that wouldn't be safe to commit anyway.
+        leak_reason = _check_for_tier_leaks(branch)
+        paired = None
+        failure_diag = None
+        if leak_reason is not None:
+            reason = leak_reason
+            failure_diag = leak_reason
+            log.warning(f"iter {i}: {leak_reason}")
         else:
-            failure_diag = None
+            # Paired-by-task comparison: per-task delta, averaged. Much less
+            # noisy than raw corpus_loss comparison.
+            paired = _paired_delta(baseline_eval, visible_label, visible_tasks) if visible_summary else None
 
-        if visible_summary and paired and paired["corpus_delta"] is not None:
+            # Diagnose any failure mode separately so history shows the real cause.
+            if not visible_summary:
+                failure_diag = "no_eval_data_in_store (researcher's eval subprocess didn't insert rows — usually a hang or crash)"
+            elif paired is None or paired.get("corpus_delta") is None:
+                missing = (paired or {}).get("missing_in_candidate") or []
+                failure_diag = f"paired_delta_uncomputable (missing per-task data; missing_tasks={missing})"
+
+        if leak_reason is None and visible_summary and paired and paired["corpus_delta"] is not None:
             new_loss = visible_summary["loss"]
             corpus_delta = paired["corpus_delta"]
             # Require full task coverage — if a task is missing a candidate run,

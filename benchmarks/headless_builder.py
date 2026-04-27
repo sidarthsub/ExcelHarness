@@ -480,11 +480,7 @@ async def run_headless(
     # --- Planner + Oracle phase ---
     spec: dict | None = None
     planner_stats: dict = {}
-    task_tier = task_meta.get("tier", 0)
-    # Tier-0 tasks are atomic and fully specified via results_contract +
-    # brief; skip the planner to avoid 2 extra sonnet turns (~$0.10 cold).
-    _should_skip_planner = skip_planner or (task_tier == 0)
-    if not _should_skip_planner:
+    if not skip_planner:
         try:
             spec, planner_stats = await run_planner_phase(task_id, task_dir, run_dir, model=model)
         except Exception as e:
@@ -501,17 +497,6 @@ async def run_headless(
 
         system_prompt = (AGENTS_DIR / "builder_v3.md").read_text()
 
-        # Tier-0 and tier-1 tasks are sufficiently simple for haiku, which is
-        # 3× cheaper per input token than sonnet. Tier-1 tasks like
-        # inputs_from_term_sheet are mechanical extraction tasks (read doc →
-        # copy values) that do not require sonnet-level reasoning. Extended
-        # thinking is a sonnet-only feature, so disable it when downgrading.
-        builder_model = model
-        builder_thinking_tokens = 5000
-        if task_tier <= 1 and model == "sonnet":
-            builder_model = "haiku"
-            builder_thinking_tokens = 0
-
         opts = ClaudeAgentOptions(
             system_prompt=system_prompt,
             allowed_tools=[
@@ -525,8 +510,8 @@ async def run_headless(
             ],
             permission_mode="bypassPermissions",
             cwd=str(ROOT),
-            model=builder_model,
-            max_thinking_tokens=builder_thinking_tokens,
+            model=model,
+            max_thinking_tokens=5000,
             add_dirs=[str(task_dir), str(run_dir)],
             env={
                 "BRIDGE_URL": server.base_url,
@@ -669,7 +654,7 @@ async def run_headless(
         "wall_seconds": round(wall, 2),
         "time_budget_seconds": time_budget,
         "over_budget": wall > time_budget,
-        "builder_model": builder_model,
+        "builder_model": model,
         "builder_usage": usage_totals,
         "planner_stats": planner_stats,
         "dollars": round(total_cost, 4),
