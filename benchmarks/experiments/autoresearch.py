@@ -56,9 +56,11 @@ PIDFILE_PATH = BENCH_ROOT / "experiments" / "autoresearch.pid"
 
 # Promotion gates.
 CANARY_REGRESSION_TOL = 0.02   # Researcher bails out itself if canary worse than this.
-IMPROVEMENT_EPSILON   = 0.03   # paired delta must be at least this negative.
-# Empirical noise floor at seeds=3 with paired-by-task comparison is ~0.01-0.02.
-# 0.03 filters most spurious wins without missing real 0.03+ improvements.
+IMPROVEMENT_EPSILON   = 0.015  # paired delta must be at least this negative.
+# Calibrated for the rewritten log-scale loss (loss.py). Per-cell loss is
+# now bounded ~[0, 2.5] (was ~[0, 2.6]), but typical per-cell values are
+# 0.05–0.5 instead of 0.4–1.0 — old 0.03 threshold was 6% of typical loss
+# range; 0.015 keeps the same 6% in the new scale.
 HOLDOUT_REGRESSION_MAX = 0.03  # holdout loss must not be more than this worse than pre-change holdout.
 
 # Holdout is expensive (~20 min). Run it on accepted iters only, and only
@@ -73,7 +75,7 @@ MAX_WALL_SECONDS = 900.0
 
 # Default concurrency. 3 proved stable in testing; 4 destabilized under
 # real workload before the ws.activate() + datetime JSON fixes landed.
-DEFAULT_PARALLEL = 3
+DEFAULT_PARALLEL = 4
 
 
 # ---- git helpers ----------------------------------------------------------
@@ -118,6 +120,10 @@ def _check_for_tier_leaks(branch: str) -> str | None:
     of task_meta inside files we own (we read tier in headless_builder.py
     just for the result.json metadata) don't false-positive — those lines
     aren't ADDED in this iter's diff.
+
+    Comment-aware: for .py files, content past a `#` is stripped before
+    matching, so a Researcher comment like
+    "# Production-safe: not task.yaml metadata" doesn't false-positive.
     """
     scope = [
         "agents/builder_v3.md",
@@ -126,12 +132,29 @@ def _check_for_tier_leaks(branch: str) -> str | None:
         "benchmarks/pseudo_bridge.py",
     ]
     diff = _git("diff", "main", "--unified=0", "--", *scope, check=False)
+    current_file: str | None = None
     for line in diff.splitlines():
-        # Only inspect ADDED lines (not '+++' diff headers).
-        if not line.startswith("+") or line.startswith("+++"):
+        # Track which file's diff we're in so we can strip Python comments.
+        if line.startswith("+++ "):
+            # `+++ b/path/to/file`
+            parts = line.split(maxsplit=1)
+            current_file = parts[1].lstrip("b/") if len(parts) > 1 else None
             continue
+        if line.startswith("--- "):
+            continue
+        # Only inspect ADDED lines.
+        if not line.startswith("+"):
+            continue
+        body = line[1:]
+        # For Python files, strip Python comments before matching. A '#'
+        # inside a string literal would still be matched — accepted false
+        # positive risk, since `task.yaml` rarely lives inside strings.
+        if current_file and current_file.endswith(".py"):
+            comment_idx = body.find("#")
+            if comment_idx >= 0:
+                body = body[:comment_idx]
         for pat in _TIER_LEAK_PATTERNS:
-            if pat.search(line):
+            if pat.search(body):
                 return (f"tier_leak: pattern {pat.pattern!r} introduced — "
                         f"change depends on benchmark-only metadata that won't "
                         f"exist in production. Line: {line[:120]!r}")
@@ -167,13 +190,17 @@ def _commit_iteration(label: str, loss: float) -> str:
 # ---- Researcher agent driver ---------------------------------------------
 
 
-async def run_researcher_turn(iter_n: int, baseline: dict, visible_tasks: list[str]) -> str:
-    """Spawn the Researcher agent for one hypothesis. Returns its final text."""
-    system_prompt = (AGENTS_DIR / "researcher.md").read_text()
+def _build_researcher_options() -> ClaudeAgentOptions:
+    """Allowed tools + system prompt for the Researcher SDK session.
 
-    # Files the Researcher can edit. Note: NO access to gold, grading.yaml,
-    # task briefs, or the grader. Holdout tasks are path-excluded implicitly
-    # because the Researcher never lists benchmarks/tasks/<holdout>/.
+    Read/Glob/Grep retained: even with editable files pre-injected per iter
+    (see `_build_iter_message`), the Researcher may need to inspect files
+    outside the editable scope (loss.py, store.py, eval_current.py) to
+    reason about how the loop works. Those reads still incur tool-call
+    overhead but they're rare relative to the editable-files reading they
+    would do without pre-injection.
+    """
+    system_prompt = (AGENTS_DIR / "researcher.md").read_text()
     allowed = [
         "Read", "Glob", "Grep",
         f"Edit({AGENTS_DIR}/builder_v3.md)",
@@ -189,26 +216,37 @@ async def run_researcher_turn(iter_n: int, baseline: dict, visible_tasks: list[s
         "Bash(git diff*)",
         "Bash(git status*)",
     ]
-
-    # Denylist — wrap with a reminder in the prompt since Agent SDK
-    # allowlist already excludes everything not listed. Included for
-    # clarity to the model.
-    opts = ClaudeAgentOptions(
+    return ClaudeAgentOptions(
         system_prompt=system_prompt,
         allowed_tools=allowed,
         permission_mode="bypassPermissions",
         cwd=str(ROOT),
         model="sonnet",
-        max_thinking_tokens=5000,
+        # Lowered from 5000 — most useful Researcher reasoning fits in ~2000 thinking tokens.
+        # 5000 was leaving the Researcher to spiral into long retries on edge cases.
+        max_thinking_tokens=2000,
         add_dirs=[str(ROOT / "agents"), str(ROOT / "benchmarks" / "experiments"),
                   str(ROOT / "benchmarks")],
     )
 
-    # Seed the Researcher with the current state. Build a compact summary
-    # of every prior iter (hypothesis + outcome) so it can avoid repeating
-    # ideas. Without this, the Researcher tends to re-propose the same
-    # changes — particularly attractive cost-pruning ones — that have
-    # already been tried.
+
+# Files whose contents we pre-inject into every per-iter message so the
+# Researcher doesn't have to issue Read tool calls for them at the start
+# of each turn. These are the files in editable scope — Researcher always
+# reads them to understand current state before proposing edits.
+_PREINJECT_PATHS = [
+    "agents/builder_v3.md",
+    "agents/planner_v3.md",
+    "benchmarks/headless_builder.py",
+    "benchmarks/pseudo_bridge.py",
+]
+
+
+def _build_iter_message(iter_n: int, baseline: dict, visible_tasks: list[str]) -> str:
+    """Build the per-iter user message. Inlines the Researcher's editable
+    files, prior hypotheses, and the eval command so the Researcher can
+    skip the per-turn Read/inspect cycle and go straight to reasoning."""
+    # Prior-iter summary so the Researcher doesn't repeat hypotheses.
     prior_summaries = []
     if HISTORY_PATH.exists():
         for line in HISTORY_PATH.read_text().splitlines():
@@ -224,6 +262,18 @@ async def run_researcher_turn(iter_n: int, baseline: dict, visible_tasks: list[s
                 f"hypothesis={h.get('hypothesis_summary') or '(unrecorded)'!r}; "
                 f"outcome={h.get('reason', '')[:120]}"
             )
+    history_block = "\n".join(prior_summaries) if prior_summaries else "(no prior iters)"
+
+    # Pre-inject current contents of every editable file. After an accept
+    # these contents have changed, so re-injecting per-iter keeps the
+    # Researcher's view fresh. Reading them ourselves is much cheaper
+    # than ten Researcher Read tool calls.
+    file_blocks = []
+    for rel in _PREINJECT_PATHS:
+        p = ROOT / rel
+        if p.exists():
+            content = p.read_text()
+            file_blocks.append(f"### `{rel}`\n```\n{content}\n```")
 
     tasks_csv = ",".join(visible_tasks)
     eval_cmd = (
@@ -231,9 +281,7 @@ async def run_researcher_turn(iter_n: int, baseline: dict, visible_tasks: list[s
         f"--tasks {tasks_csv} --seeds 3 --label iter{iter_n}_visible"
     )
 
-    history_block = "\n".join(prior_summaries) if prior_summaries else "(no prior iters)"
-
-    msg = (
+    return (
         f"## Iteration {iter_n}\n\n"
         f"Current baseline corpus_loss: **{baseline['corpus_loss']:.4f}**\n"
         f"Per-task baseline:\n```json\n"
@@ -242,6 +290,9 @@ async def run_researcher_turn(iter_n: int, baseline: dict, visible_tasks: list[s
         f"{history_block}\n\n"
         f"**Do not repeat these hypotheses.** If your idea overlaps a rejected proposal, "
         f"either skip it or articulate why this new variant should differ.\n\n"
+        f"### Editable files (current contents — go straight to Edit, no Read needed)\n\n"
+        + "\n\n".join(file_blocks)
+        + f"\n\n### Action\n\n"
         f"Proposal file: `{PROPOSALS_DIR}/iter_{iter_n}.md` (write this FIRST, before any Edit). "
         f"Lead the file with a one-sentence headline starting `# iter {iter_n}: <headline>` — "
         f"that line is recorded in history.jsonl and shown to future iters.\n"
@@ -254,23 +305,27 @@ async def run_researcher_turn(iter_n: int, baseline: dict, visible_tasks: list[s
         f"command above, and finish with your ACCEPT/REJECT recommendation."
     )
 
-    client = ClaudeSDKClient(options=opts)
+
+async def run_researcher_turn(client: ClaudeSDKClient, iter_n: int, baseline: dict,
+                              visible_tasks: list[str]) -> str:
+    """Send one iter prompt to the persistent Researcher session.
+
+    The client lives across the whole run (created in outer_loop). Each
+    iter is just a new query() on the same conversation. Anthropic's
+    prompt cache stays warm on the system prompt, and the conversation's
+    earlier state (which proposals were tried, how the loop responded)
+    naturally carries forward without us having to re-inject.
+    """
+    msg = _build_iter_message(iter_n, baseline, visible_tasks)
     final_text = ""
-    try:
-        await client.connect()
-        await client.query(msg)
-        async for message in client.receive_messages():
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        final_text = block.text
-            elif isinstance(message, ResultMessage):
-                break
-    finally:
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
+    await client.query(msg)
+    async for message in client.receive_messages():
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    final_text = block.text
+        elif isinstance(message, ResultMessage):
+            break
     return final_text
 
 
@@ -573,6 +628,16 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
     current_sha = _git_sha()
     accepted_since_last_holdout = 0
 
+    # Persistent Researcher SDK session — single connect for the whole run.
+    # Per-iter messages reuse the same conversation so Anthropic's prompt
+    # cache stays warm on the system prompt + system tools list. The
+    # conversation history naturally carries forward (no need to re-inject
+    # what was tried). If conversation outgrows the context window over
+    # many iters, we'll see it in errors and add a periodic reset.
+    researcher_client = ClaudeSDKClient(options=_build_researcher_options())
+    await researcher_client.connect()
+    log.info("researcher session connected (persistent across iters)")
+
     for i in range(1, max_iters + 1):
         if spent >= max_dollars:
             log.info(f"spend budget exhausted (${spent:.2f} ≥ ${max_dollars}); stopping.")
@@ -591,7 +656,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
 
         verdict_text = ""
         try:
-            verdict_text = await run_researcher_turn(i, baseline_eval, visible_tasks)
+            verdict_text = await run_researcher_turn(researcher_client, i, baseline_eval, visible_tasks)
         except Exception as e:
             log.warning(f"researcher turn crashed: {type(e).__name__}: {e}")
 
@@ -748,6 +813,12 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
         _write_status(phase="idle_between_iters", iter=i,
                       baseline_loss=baseline_loss, spent_usd=round(spent, 4))
         log.info(f"iter {i}: accepted={accepted} reason={reason!r} loss={new_loss}")
+
+    # Tear down the persistent Researcher session.
+    try:
+        await researcher_client.disconnect()
+    except Exception as e:
+        log.warning(f"researcher disconnect: {type(e).__name__}: {e}")
 
     _write_status(phase="done", baseline_loss=baseline_loss, spent_usd=round(spent, 4))
     log.info(f"done. spent=${spent:.2f}, baseline_loss={baseline_loss:.4f}")
