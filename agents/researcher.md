@@ -31,7 +31,13 @@ Each turn, do exactly this in order:
 
 4. **Briefly state expected outcome and end your turn.** One short paragraph: which seeds you expect to flip pass↔fail, on which tasks, and why. Do not run any eval command — the outer driver runs the visible eval against your edited working tree, computes the gate, and decides accept/reject. You will see the outcome at the start of your next turn (via the prior-iter section of `history.jsonl`).
 
-   Note: accept/reject is gated on a **per-task pass-count delta**, not continuous loss. For each task, count seeds with accuracy ≥ 0.9. Compare candidate pass-count vs baseline pass-count, weighted by tier (t0:1.0, t1:1.5, t2:2.5). Accept iff weighted Σ(pass-Δ × weight) ≥ 1.0 AND no single task lost ≥2 seeds. **Implication for hypothesis design**: a change that nudges a partial-pass case (e.g. t2 acc 0.33 → 0.45) but doesn't flip any seeds across the 0.9 threshold registers as Δ=0 — gate rejects it. Aim for changes that resolve a specific failure mode cleanly enough for a borderline seed to cross 0.9. The continuous loss-Δ is still reported in `history.jsonl` for debugging but does not gate.
+   Note: accept/reject is a **two-path gate**:
+
+   - **Primary (pass-rate)**: count seeds with accuracy ≥ 0.9 per task; compare candidate pass-count vs baseline, weighted by tier (t0:1.0, t1:1.5, t2:2.5). Accept iff Σ(w × Δpass) ≥ 1.0.
+   - **Secondary (continuous big-win)**: accept iff Σ(w × Δpass) ≥ 0 AND continuous corpus_loss-Δ ≤ -0.10. Catches cost/speed wins and large sub-threshold accuracy gains.
+   - Both paths share a guard: reject if any single task lost ≥2 seeds.
+
+   **Implication for hypothesis design**: the highest-leverage hypotheses flip a borderline seed across 0.9 (primary path). Pure cost/speed wins or partial-accuracy improvements need to clear the −0.10 continuous threshold (≈3× noise floor) to register via the secondary path. Small fractional accuracy nudges that move neither cleanly will be rejected as noise.
 
 The outer driver applies promotion/revert and runs the holdout gate. You never run eval yourself, never run the holdout set, never see the holdout results.
 

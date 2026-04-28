@@ -74,6 +74,14 @@ PASS_ACCURACY_THRESHOLD = 0.9
 MIN_PASS_COUNT_DELTA_WEIGHTED = 1.0  # weighted Σ(w_t × Δpass_t); tier weights are 1.0/1.5/2.5
 MAX_PER_TASK_REGRESSION = 1          # reject if any task lost ≥(this+1) seeds, even with a net win
 
+# Hybrid gate — secondary path that catches improvements pass-rate misses:
+# pure cost/speed wins (no accuracy change), and sub-threshold accuracy
+# gains that move continuous loss substantially without flipping seeds
+# across the 0.9 pass-line. Calibrated to ~3× the observed noise floor
+# (~0.10 spurious deltas in the prior 26-iter session) so it filters
+# noise while accepting real meaningful continuous improvements.
+CONTINUOUS_BIG_WIN_THRESHOLD = 0.10  # corpus_delta must be ≤ -this for secondary path
+
 HOLDOUT_REGRESSION_MAX = 0.03  # holdout loss must not be more than this worse than pre-change holdout.
 
 # Holdout is expensive (~20 min). Run it on accepted iters only, and only
@@ -837,50 +845,60 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
             corpus_delta = paired["corpus_delta"]
             pass_delta = paired["pass_count_delta_weighted"]
             worst_reg = paired["worst_per_task_pass_regression"]
-            # Compact summary for reason strings
             gate_summary = (f"pass-Δ={pass_delta:+.1f}, worst-task-regression={worst_reg}, "
                             f"loss-Δ={corpus_delta:+.4f}")
 
-            # Require full task coverage — if a task is missing a candidate run,
-            # we don't have enough data to trust the paired delta.
+            # Two-path accept criterion. Both paths share the per-task
+            # regression guard (no individual task lost ≥2 seeds).
+            #   primary  = pass-rate gate     → real failure-mode resolutions
+            #   secondary = continuous big-win → cost/speed wins, or
+            #               sub-threshold accuracy gains too large to be noise
+            primary_pass = pass_delta >= MIN_PASS_COUNT_DELTA_WEIGHTED
+            secondary_pass = (
+                pass_delta >= 0
+                and corpus_delta <= -CONTINUOUS_BIG_WIN_THRESHOLD
+            )
+
             if paired["missing_in_candidate"]:
                 reason = (f"incomplete eval — missing tasks in candidate: "
                           f"{paired['missing_in_candidate']}")
             elif worst_reg > MAX_PER_TASK_REGRESSION:
-                # A task lost ≥2 seeds — strong evidence of real damage,
-                # not noise. Reject regardless of net pass-Δ.
                 reason = (f"per_task_regression (one task lost {worst_reg} seeds, "
                           f"max allowed {MAX_PER_TASK_REGRESSION}; {gate_summary})")
-            elif pass_delta < MIN_PASS_COUNT_DELTA_WEIGHTED:
-                reason = (f"no_improvement (need pass-Δ ≥ {MIN_PASS_COUNT_DELTA_WEIGHTED}; "
-                          f"{gate_summary})")
-            elif skip_holdout:
-                accepted = True
-                reason = f"improved ({gate_summary}); holdout skipped"
+            elif not (primary_pass or secondary_pass):
+                reason = (
+                    f"no_improvement (need pass-Δ ≥ {MIN_PASS_COUNT_DELTA_WEIGHTED} "
+                    f"OR (pass-Δ ≥ 0 AND loss-Δ ≤ -{CONTINUOUS_BIG_WIN_THRESHOLD}); "
+                    f"{gate_summary})"
+                )
             else:
-                # Tentatively accept on visible; only fire holdout every Nth accept.
-                would_be_accepted_count = accepted_since_last_holdout + 1
-                if would_be_accepted_count >= HOLDOUT_EVERY_N_ACCEPTED:
-                    _write_status(phase="holdout_gate", iter=i)
-                    holdout_new = await _run_holdout(holdout_tasks)
-                    ran_holdout_this_iter = True
-                    spent += holdout_new.get("eval_cost_usd", 0.0) or 0.0
-                    if (holdout_new["corpus_loss"]
-                            > holdout_baseline["corpus_loss"] + HOLDOUT_REGRESSION_MAX):
-                        reason = (f"holdout regression after {would_be_accepted_count} accepted — "
-                                  f"{holdout_new['corpus_loss']:.4f} > "
-                                  f"{holdout_baseline['corpus_loss']:.4f} + {HOLDOUT_REGRESSION_MAX}")
+                gate_path = "pass-rate" if primary_pass else "continuous"
+                if skip_holdout:
+                    accepted = True
+                    reason = f"improved via {gate_path} ({gate_summary}); holdout skipped"
+                else:
+                    would_be_accepted_count = accepted_since_last_holdout + 1
+                    if would_be_accepted_count >= HOLDOUT_EVERY_N_ACCEPTED:
+                        _write_status(phase="holdout_gate", iter=i)
+                        holdout_new = await _run_holdout(holdout_tasks)
+                        ran_holdout_this_iter = True
+                        spent += holdout_new.get("eval_cost_usd", 0.0) or 0.0
+                        if (holdout_new["corpus_loss"]
+                                > holdout_baseline["corpus_loss"] + HOLDOUT_REGRESSION_MAX):
+                            reason = (f"holdout regression after {would_be_accepted_count} accepted — "
+                                      f"{holdout_new['corpus_loss']:.4f} > "
+                                      f"{holdout_baseline['corpus_loss']:.4f} + {HOLDOUT_REGRESSION_MAX}")
+                        else:
+                            accepted = True
+                            reason = (f"improved via {gate_path} ({gate_summary}) + holdout ok "
+                                      f"(after {would_be_accepted_count} accepted)")
+                            holdout_baseline = holdout_new
+                            accepted_since_last_holdout = 0
                     else:
                         accepted = True
-                        reason = (f"improved ({gate_summary}) + holdout ok "
-                                  f"(after {would_be_accepted_count} accepted)")
-                        holdout_baseline = holdout_new
-                        accepted_since_last_holdout = 0
-                else:
-                    accepted = True
-                    reason = (f"improved ({gate_summary}); holdout due in "
-                              f"{HOLDOUT_EVERY_N_ACCEPTED - would_be_accepted_count} more accepts")
-                    accepted_since_last_holdout = would_be_accepted_count
+                        reason = (f"improved via {gate_path} ({gate_summary}); holdout due in "
+                                  f"{HOLDOUT_EVERY_N_ACCEPTED - would_be_accepted_count} more accepts")
+                        accepted_since_last_holdout = would_be_accepted_count
         else:
             reason = failure_diag or "researcher did not produce a visible eval"
 
