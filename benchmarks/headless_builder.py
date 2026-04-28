@@ -501,11 +501,12 @@ async def run_headless(
     completed = False
     terminated_reason = "unknown"
 
-    # Route simple tasks (no text source documents) to the lighter Haiku stack.
-    # Without source documents to summarise, the Planner adds overhead without benefit.
-    # This check reads actual task content and is production-safe.
+    # Skip the Planner for tasks with no text source documents — the Planner's
+    # value is summarising complex input docs into a spec; without them it adds
+    # overhead without benefit. The model stays at the default (sonnet) because
+    # even "simple" financial calculations require precise multi-step arithmetic
+    # that haiku handles poorly.
     if not _has_text_input_files(task_dir):
-        model = "haiku"
         skip_planner = True
 
     # --- Planner + Oracle phase ---
