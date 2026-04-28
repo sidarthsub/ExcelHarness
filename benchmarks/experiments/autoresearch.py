@@ -56,11 +56,24 @@ PIDFILE_PATH = BENCH_ROOT / "experiments" / "autoresearch.pid"
 
 # Promotion gates.
 CANARY_REGRESSION_TOL = 0.02   # Researcher bails out itself if canary worse than this.
-IMPROVEMENT_EPSILON   = 0.015  # paired delta must be at least this negative.
-# Calibrated for the rewritten log-scale loss (loss.py). Per-cell loss is
-# now bounded ~[0, 2.5] (was ~[0, 2.6]), but typical per-cell values are
-# 0.05–0.5 instead of 0.4–1.0 — old 0.03 threshold was 6% of typical loss
-# range; 0.015 keeps the same 6% in the new scale.
+IMPROVEMENT_EPSILON   = 0.015  # paired delta must be at least this negative (continuous gate, kept for reporting).
+
+# Pass-rate gate — primary accept criterion. The continuous loss-delta gate
+# was noise-dominated: with 3-seed multi-modal accuracy distributions
+# (e.g. {0.11, 0.33, 1.0}) the per-seed swings dwarfed the 0.015 threshold,
+# so noise rejects looked identical to real rejects in history.jsonl and
+# the Researcher couldn't learn from them.
+#
+# Pass-rate uses the discrete order statistic instead: count #seeds per task
+# with accuracy >= PASS_ACCURACY_THRESHOLD, weighted by tier. A real fix
+# (e.g. resolving the Y1 timing convention) flips one or more seeds from
+# fail → pass, which moves pass-count by ≥1 — cleanly above the noise floor.
+# Mean-aggregate, by contrast, would average that flip with surviving
+# failure modes and produce a much smaller continuous delta.
+PASS_ACCURACY_THRESHOLD = 0.9
+MIN_PASS_COUNT_DELTA_WEIGHTED = 1.0  # weighted Σ(w_t × Δpass_t); tier weights are 1.0/1.5/2.5
+MAX_PER_TASK_REGRESSION = 1          # reject if any task lost ≥(this+1) seeds, even with a net win
+
 HOLDOUT_REGRESSION_MAX = 0.03  # holdout loss must not be more than this worse than pre-change holdout.
 
 # Holdout is expensive (~20 min). Run it on accepted iters only, and only
@@ -346,37 +359,69 @@ def _load_latest_eval_for(label: str) -> dict | None:
         conn.close()
 
 
+def _query_pass_counts(conn, label_pattern: str, tasks: list[str],
+                       latest_n: int = 3,
+                       threshold: float = PASS_ACCURACY_THRESHOLD) -> dict[str, int]:
+    """Per-task count of seeds (latest `latest_n`) whose accuracy >= threshold.
+
+    `label_pattern` accepts SQL LIKE syntax — pass `'baseline%'` for prefix
+    matching across reused-baseline rows, or an exact label like
+    `'iter1_visible'` for a specific iter's eval. (Without `%`, LIKE behaves
+    as exact match.)
+    """
+    out: dict[str, int] = {}
+    for task_id in tasks:
+        cur = conn.execute(
+            "SELECT accuracy FROM runs WHERE label LIKE ? AND task_id = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (label_pattern, task_id, latest_n),
+        )
+        accs = [r[0] for r in cur.fetchall() if r[0] is not None]
+        out[task_id] = sum(1 for a in accs if a >= threshold)
+    return out
+
+
 def _paired_delta(baseline: dict, candidate_label: str, tasks: list[str]) -> dict:
-    """Compare candidate eval to baseline using per-task paired deltas,
-    weighted by tier so the corpus delta tracks the corpus_loss objective.
+    """Compare candidate eval to baseline along two axes:
 
-    For each task in `tasks`:
-        delta_t = mean(candidate_loss_t) - mean(baseline_loss_t)
-        w_t    = TIER_WEIGHTS[tier_of(task_t)]   # 1.0 / 1.5 / 2.5
-    Then corpus_delta = Σ(w_t × delta_t) / Σ(w_t).
+    1. Continuous loss delta (kept for reporting + the dashboard chart):
+        delta_t       = mean(candidate_loss_t) - mean(baseline_loss_t)
+        w_t           = TIER_WEIGHTS[tier_of(task_t)]   # 1.0 / 1.5 / 2.5
+        corpus_delta  = Σ(w_t × delta_t) / Σ(w_t)
 
-    Task-level means cancel out the (huge) variance from task difficulty;
-    tier weighting then ensures a t2 improvement moves the gate harder
-    than an equal-magnitude t0 improvement — same weighting used by
-    `loss.corpus_loss`, so promotion gate and objective stay aligned.
+    2. Pass-count delta (PRIMARY GATE — promotion uses this, not 1):
+        pass_t        = #seeds with accuracy >= PASS_ACCURACY_THRESHOLD
+        delta_pass_t  = pass_t(candidate) - pass_t(baseline)
+        pass_delta_w  = Σ(w_t × delta_pass_t)         # NOT normalized
 
-    Returns {
-        "corpus_delta": float,
-        "per_task": {task: {baseline_loss, new_loss, delta, weight}},
-        "missing_in_candidate": [task_id,...],
-    }
+    Why dual-track: the continuous gate is noise-dominated when accuracy
+    is multi-modal across seeds (a single seed flipping pass↔fail moves
+    the mean by ~0.33 on a 3-seed task). Pass-count is the discrete order
+    statistic — only changes when a seed's outcome actually flips, which
+    is the signal we care about.
+
+    `baseline['label_pattern']` should be set by the caller to whatever
+    sqlite label-pattern reflects the baseline rows (e.g. 'baseline%' for
+    fresh/reused, the exact iter label after an iter accept rebuilds
+    baseline_eval).
     """
     from benchmarks.experiments.loss import tier_weight as _tier_weight
 
     baseline_per_task = (baseline or {}).get("per_task") or {}
+    baseline_label_pattern = (baseline or {}).get("label_pattern", "baseline%")
+
     conn = store_mod.connect()
     try:
         candidate_per_task = store_mod.per_task_losses(conn, candidate_label)
+        baseline_pass = _query_pass_counts(conn, baseline_label_pattern, tasks)
+        candidate_pass = _query_pass_counts(conn, candidate_label, tasks)
     finally:
         conn.close()
 
     rows: dict[str, dict] = {}
-    weighted_deltas: list[tuple[float, float]] = []  # (delta, weight)
+    weighted_deltas: list[tuple[float, float]] = []  # (loss_delta, weight)
+    weighted_pass_delta = 0.0
+    worst_per_task_regression = 0
     missing = []
     for task_id in tasks:
         b_row = baseline_per_task.get(task_id) or {}
@@ -384,10 +429,19 @@ def _paired_delta(baseline: dict, candidate_label: str, tasks: list[str]) -> dic
         b_loss = b_row.get("loss")
         c_loss = c_row.get("mean_loss")
         w = _tier_weight(task_id)
+        b_pass = baseline_pass.get(task_id, 0)
+        c_pass = candidate_pass.get(task_id, 0)
+        delta_pass = c_pass - b_pass
+        weighted_pass_delta += w * delta_pass
+        if -delta_pass > worst_per_task_regression:
+            worst_per_task_regression = -delta_pass
+
         if b_loss is None or c_loss is None:
             missing.append(task_id)
             rows[task_id] = {"baseline_loss": b_loss, "new_loss": c_loss,
-                             "delta": None, "weight": w}
+                             "delta": None, "weight": w,
+                             "baseline_pass": b_pass, "new_pass": c_pass,
+                             "delta_pass": delta_pass}
             continue
         d = c_loss - b_loss
         weighted_deltas.append((d, w))
@@ -395,6 +449,9 @@ def _paired_delta(baseline: dict, candidate_label: str, tasks: list[str]) -> dic
                          "new_loss": round(c_loss, 4),
                          "delta": round(d, 4),
                          "weight": w,
+                         "baseline_pass": b_pass,
+                         "new_pass": c_pass,
+                         "delta_pass": delta_pass,
                          "n_candidate": c_row.get("n")}
 
     if weighted_deltas:
@@ -405,6 +462,8 @@ def _paired_delta(baseline: dict, candidate_label: str, tasks: list[str]) -> dic
 
     return {
         "corpus_delta": corpus_delta,
+        "pass_count_delta_weighted": round(weighted_pass_delta, 2),
+        "worst_per_task_pass_regression": worst_per_task_regression,
         "per_task": rows,
         "missing_in_candidate": missing,
         "n_tasks_compared": len(weighted_deltas),
@@ -675,6 +734,10 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
             model="sonnet", skip_planner=False,
             time_budget=VISIBLE_TIME_BUDGET, max_turns=40, parallel=DEFAULT_PARALLEL,
         )
+    # Track the sqlite label-pattern for pass-count queries in _paired_delta.
+    # Both the fresh-run and reuse paths produce/draw rows under "baseline%"
+    # (the reuse query uses LIKE prefix, fresh-run writes label="baseline").
+    baseline_eval["label_pattern"] = "baseline%"
     LAST_EVAL_PATH.write_text(json.dumps(baseline_eval, indent=2, default=str))
     baseline_loss = baseline_eval["corpus_loss"]
     log.info(f"baseline corpus_loss = {baseline_loss:.4f}")
@@ -772,17 +835,28 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
         if leak_reason is None and visible_summary and paired and paired["corpus_delta"] is not None:
             new_loss = visible_summary["loss"]
             corpus_delta = paired["corpus_delta"]
+            pass_delta = paired["pass_count_delta_weighted"]
+            worst_reg = paired["worst_per_task_pass_regression"]
+            # Compact summary for reason strings
+            gate_summary = (f"pass-Δ={pass_delta:+.1f}, worst-task-regression={worst_reg}, "
+                            f"loss-Δ={corpus_delta:+.4f}")
+
             # Require full task coverage — if a task is missing a candidate run,
             # we don't have enough data to trust the paired delta.
             if paired["missing_in_candidate"]:
                 reason = (f"incomplete eval — missing tasks in candidate: "
                           f"{paired['missing_in_candidate']}")
-            elif corpus_delta > -IMPROVEMENT_EPSILON:
-                reason = (f"no_improvement (paired Δ={corpus_delta:+.4f}, "
-                          f"need ≤ -{IMPROVEMENT_EPSILON})")
+            elif worst_reg > MAX_PER_TASK_REGRESSION:
+                # A task lost ≥2 seeds — strong evidence of real damage,
+                # not noise. Reject regardless of net pass-Δ.
+                reason = (f"per_task_regression (one task lost {worst_reg} seeds, "
+                          f"max allowed {MAX_PER_TASK_REGRESSION}; {gate_summary})")
+            elif pass_delta < MIN_PASS_COUNT_DELTA_WEIGHTED:
+                reason = (f"no_improvement (need pass-Δ ≥ {MIN_PASS_COUNT_DELTA_WEIGHTED}; "
+                          f"{gate_summary})")
             elif skip_holdout:
                 accepted = True
-                reason = f"improved paired Δ={corpus_delta:+.4f}, holdout skipped"
+                reason = f"improved ({gate_summary}); holdout skipped"
             else:
                 # Tentatively accept on visible; only fire holdout every Nth accept.
                 would_be_accepted_count = accepted_since_last_holdout + 1
@@ -798,14 +872,14 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
                                   f"{holdout_baseline['corpus_loss']:.4f} + {HOLDOUT_REGRESSION_MAX}")
                     else:
                         accepted = True
-                        reason = (f"improved (paired Δ={corpus_delta:+.4f}) + holdout ok "
+                        reason = (f"improved ({gate_summary}) + holdout ok "
                                   f"(after {would_be_accepted_count} accepted)")
                         holdout_baseline = holdout_new
                         accepted_since_last_holdout = 0
                 else:
                     accepted = True
-                    reason = (f"improved (paired Δ={corpus_delta:+.4f}; holdout due in "
-                              f"{HOLDOUT_EVERY_N_ACCEPTED - would_be_accepted_count} more accepts)")
+                    reason = (f"improved ({gate_summary}); holdout due in "
+                              f"{HOLDOUT_EVERY_N_ACCEPTED - would_be_accepted_count} more accepts")
                     accepted_since_last_holdout = would_be_accepted_count
         else:
             reason = failure_diag or "researcher did not produce a visible eval"
@@ -854,6 +928,11 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
                     }
                     for t, row in accepted_per_task.items()
                 },
+                # Pass-count queries in the next iter's _paired_delta need
+                # to read from the exact iter-visible label (not the original
+                # 'baseline%' prefix), since this iter's accepted rows ARE
+                # the new baseline.
+                "label_pattern": visible_label,
             }
             LAST_EVAL_PATH.write_text(json.dumps(baseline_eval, indent=2, default=str))
             _git("checkout", "main", check=False)
@@ -877,6 +956,8 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
             "baseline_loss": baseline_loss,
             "new_loss": new_loss,
             "paired_delta": (paired or {}).get("corpus_delta") if paired else None,
+            "pass_count_delta_weighted": (paired or {}).get("pass_count_delta_weighted") if paired else None,
+            "worst_per_task_pass_regression": (paired or {}).get("worst_per_task_pass_regression") if paired else None,
             "paired_per_task": (paired or {}).get("per_task") if paired else None,
             "sha_before": current_sha,
             "wall_seconds": round(time.time() - iter_start, 1),
