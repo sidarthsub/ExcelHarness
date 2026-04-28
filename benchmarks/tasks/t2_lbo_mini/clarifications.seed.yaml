@@ -21,3 +21,7 @@
 - id: sheet_names
   matches: ["sheet name", "name the sheet", "what to call"]
   answer: "Exactly: 'Sources and Uses', 'Operating Model', 'Returns'."
+
+- id: year_timing_convention
+  matches: ["year 1", "y1 ebitda", "y1 revenue", "entry year", "entry ebitda", "growth start", "year 0", "first year", "ebitda growth", "revenue growth", "growth rate", "growth applies", "growth begins", "ltm at close", "projection start", "growing"]
+  answer: "Entry values are Year 0 (LTM at close). Year 1 = entry × (1+growth): Y1 EBITDA = $54,000,000, Y1 Revenue = $265,000,000. Apply growth starting Y1, not Y0. Express monetary values in full dollars (e.g., $54,000,000 not $54M)."
