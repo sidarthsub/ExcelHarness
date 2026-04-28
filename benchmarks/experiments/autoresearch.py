@@ -626,6 +626,25 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
             "commit or stash first."
         )
 
+    # Wipe stale `iter*_visible` and `iter*_canary` rows from sqlite. Each
+    # session's iter labels (iter1_visible, iter2_visible, …) collide with
+    # any prior session's iter labels — `_load_latest_eval_for` aggregates
+    # ALL rows under a label, so without this wipe the new iter 1's
+    # paired-Δ would be polluted by the prior session's iter 1 rows.
+    # Baseline / holdout rows are preserved (they're keyed by label
+    # prefix, not iter number, and reusable across sessions).
+    conn = store_mod.connect()
+    try:
+        cur = conn.execute(
+            "DELETE FROM runs WHERE label LIKE 'iter%_visible' "
+            "OR label LIKE 'iter%_canary'"
+        )
+        conn.commit()
+        if cur.rowcount:
+            log.info(f"purged {cur.rowcount} stale iter*_visible/canary rows from prior session")
+    finally:
+        conn.close()
+
     # Pick the task sets for this session. Rotation is fixed-per-session:
     # the Researcher sees the same visible set across every iter so its
     # proposals are comparable; rotation only happens between sessions.
