@@ -71,11 +71,16 @@ HOLDOUT_EVERY_N_ACCEPTED = 3
 # Global wall-time ceiling per cell. Task.yaml budgets remain the intent
 # (and drive time_loss normalization), but no cell is allowed to run past
 # this — protects against hung Builders and runaway costs.
-MAX_WALL_SECONDS = 900.0
+# Per-cell wall caps. Visible runs use the tighter budget so iter wall
+# stays ≤ 10 min; holdout keeps headroom for the harder lbo_mini task
+# whose cells legitimately take 6-12 min.
+VISIBLE_TIME_BUDGET = 600.0
+HOLDOUT_TIME_BUDGET = 900.0
+MAX_WALL_SECONDS = HOLDOUT_TIME_BUDGET  # back-compat alias
 
 # Default concurrency. 3 proved stable in testing; 4 destabilized under
 # real workload before the ws.activate() + datetime JSON fixes landed.
-DEFAULT_PARALLEL = 4
+DEFAULT_PARALLEL = 9
 
 
 # ---- git helpers ----------------------------------------------------------
@@ -208,9 +213,9 @@ def _build_researcher_options() -> ClaudeAgentOptions:
         f"Edit({BENCH_ROOT}/headless_builder.py)",
         f"Edit({BENCH_ROOT}/pseudo_bridge.py)",
         f"Write({PROPOSALS_DIR}/iter_*.md)",
-        # Running evals: scoped to the exact command surface.
-        "Bash(python -m benchmarks.experiments.eval_current*)",
-        "Bash(python3 -m benchmarks.experiments.eval_current*)",
+        # Eval invocation moved to the orchestrator — Researcher must not
+        # run eval_current itself (was producing stale background-task
+        # coordination bugs). These reads are still useful for context.
         "Bash(cat benchmarks/experiments/proposals/*)",
         "Bash(cat benchmarks/experiments/history.jsonl)",
         "Bash(git diff*)",
@@ -275,12 +280,6 @@ def _build_iter_message(iter_n: int, baseline: dict, visible_tasks: list[str]) -
             content = p.read_text()
             file_blocks.append(f"### `{rel}`\n```\n{content}\n```")
 
-    tasks_csv = ",".join(visible_tasks)
-    eval_cmd = (
-        f"python -m benchmarks.experiments.eval_current "
-        f"--tasks {tasks_csv} --seeds 3 --label iter{iter_n}_visible"
-    )
-
     return (
         f"## Iteration {iter_n}\n\n"
         f"Current baseline corpus_loss: **{baseline['corpus_loss']:.4f}**\n"
@@ -298,11 +297,17 @@ def _build_iter_message(iter_n: int, baseline: dict, visible_tasks: list[str]) -
         f"that line is recorded in history.jsonl and shown to future iters.\n"
         f"\n"
         f"**Visible tasks for this session:** {visible_tasks}\n"
-        f"**Eval command to run (exactly this):**\n"
-        f"```\n{eval_cmd}\n```\n"
         f"\n"
-        f"Do one iteration now: write the proposal, apply ONE edit, run the eval "
-        f"command above, and finish with your ACCEPT/REJECT recommendation."
+        f"Do one iteration now:\n"
+        f"  1. Write the proposal file (hypothesis + falsification criterion).\n"
+        f"  2. Apply ONE Edit to one allowed file.\n"
+        f"  3. Briefly state which axis (accuracy / cost / time) and which tasks "
+        f"you expect to move, and end your turn.\n"
+        f"\n"
+        f"**Do NOT run any eval command.** The outer driver runs the eval against "
+        f"your edited working tree as soon as your turn ends, then computes the "
+        f"paired-Δ promotion gate and commits or reverts. You do not see the "
+        f"results until the next iter's prompt (via `history.jsonl`)."
     )
 
 
@@ -414,7 +419,25 @@ async def _run_holdout(holdout_tasks: list[str]) -> dict[str, Any]:
         label=f"holdout_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
         model="sonnet",
         skip_planner=False,
-        time_budget=MAX_WALL_SECONDS,
+        time_budget=HOLDOUT_TIME_BUDGET,
+        max_turns=40,
+        parallel=DEFAULT_PARALLEL,
+    )
+
+
+async def _run_iter_visible(iter_n: int, visible_tasks: list[str]) -> dict[str, Any]:
+    """Run the per-iter visible eval. Owned by the orchestrator (not the
+    Researcher) so that (a) Researcher session can end as soon as it's
+    done editing, eliminating the stale-background-task coordination bug,
+    and (b) we can apply the tighter VISIBLE_TIME_BUDGET cap consistently."""
+    log.info(f"running iter {iter_n} visible eval on {visible_tasks}…")
+    return await run_eval(
+        tasks=visible_tasks,
+        seeds=3,
+        label=f"iter{iter_n}_visible",
+        model="sonnet",
+        skip_planner=False,
+        time_budget=VISIBLE_TIME_BUDGET,
         max_turns=40,
         parallel=DEFAULT_PARALLEL,
     )
@@ -631,7 +654,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
         baseline_eval = await run_eval(
             tasks=visible_tasks, seeds=3, label="baseline",  # 3 seeds for variance control (see paired comparison)
             model="sonnet", skip_planner=False,
-            time_budget=MAX_WALL_SECONDS, max_turns=40, parallel=DEFAULT_PARALLEL,
+            time_budget=VISIBLE_TIME_BUDGET, max_turns=40, parallel=DEFAULT_PARALLEL,
         )
     LAST_EVAL_PATH.write_text(json.dumps(baseline_eval, indent=2, default=str))
     baseline_loss = baseline_eval["corpus_loss"]
@@ -687,11 +710,17 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
         except Exception as e:
             log.warning(f"researcher turn crashed: {type(e).__name__}: {e}")
 
+        # Orchestrator owns the eval (Researcher used to invoke it via Bash,
+        # which produced "stale background task" coordination bugs and made
+        # the per-iter wall = think + eval ≈ 13 min). Now: Researcher writes
+        # proposal + applies edit + exits; orchestrator runs eval against
+        # the edited tree.
         _write_status(phase="evaluating", iter=i)
-
-        # Fresh eval is the Researcher's last `iter{i}_visible` batch.
-        # Canary is no longer run — visible is small enough to be the primary gate.
         visible_label = f"iter{i}_visible"
+        try:
+            await _run_iter_visible(i, visible_tasks)
+        except Exception as e:
+            log.warning(f"iter {i} visible eval crashed: {type(e).__name__}: {e}")
         visible_summary = _load_latest_eval_for(visible_label)
 
         accepted = False

@@ -50,18 +50,21 @@ CANARY_SET = ["t0_npv", "t1_inputs_from_term_sheet"]
 
 # Default fixed sets — used when rotation isn't requested. 1 task per tier
 # (t0+t1+t2) so the Researcher gets paired-Δ signal across the full
-# difficulty curve. t2 in visible is what surfaces Planner/Oracle/Builder
-# pipeline gaps (those rarely manifest on t0/t1).
+# difficulty curve. Visible t2 is `cap_table_series_ab` (mean ~300s/cell,
+# baseline acc ~0.81 with real headroom) so per-iter wall stays ≤10 min.
+# `lbo_mini` lives in holdout — its 600-1100s cell time and stronger
+# failure-mode coverage make it the right promotion gate but the wrong
+# fast-feedback signal.
 VISIBLE_SET = [
     "t0_npv",
     "t1_inputs_from_term_sheet",
-    "t2_lbo_mini",
+    "t2_cap_table_series_ab",
 ]
 
 HOLDOUT_SET = [
     "t0_dcf_terminal_value",
     "t1_revenue_build",
-    "t2_cap_table_series_ab",
+    "t2_lbo_mini",
 ]
 
 # Full pools for rotation. Task tiers are roughly balanced for speed:
@@ -89,10 +92,12 @@ T1_VISIBLE_POOL = [
     "t1_returns_table",
 ]
 
-# t2 visible pool — t2_lbo_mini is the LBO-style task; the other two t2s
-# stay in holdout so promotion-gating still has unseen t2 coverage.
+# t2 visible pool — `cap_table_series_ab` is the fastest t2 (~300s/cell)
+# with non-trivial headroom; chosen as the iter-time t2 representative.
+# The slower/harder t2s stay in holdout so promotion gating still tests
+# the full difficulty curve.
 T2_VISIBLE_POOL = [
-    "t2_lbo_mini",
+    "t2_cap_table_series_ab",
 ]
 
 # Combined view kept for backward-compat callers that want the full set.
@@ -101,7 +106,7 @@ VISIBLE_POOL = T0_VISIBLE_POOL + T1_VISIBLE_POOL + T2_VISIBLE_POOL
 T0_HOLDOUT_POOL = ["t0_dcf_terminal_value"]
 T1_HOLDOUT_POOL = ["t1_revenue_build"]
 T2_HOLDOUT_POOL = [
-    "t2_cap_table_series_ab",
+    "t2_lbo_mini",
     "t2_safe_convert_series_a",
 ]
 
