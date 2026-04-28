@@ -9,3 +9,7 @@
 - id: phase_transition
   matches: ["phase transition", "when does burn jump", "month 6 vs month 7", "phase 1 length", "inclusive"]
   answer: "Burn jumps from B4 to B5 strictly after month B6; phase 1 is exactly B6 months at the lower burn."
+
+- id: input_output_sheet_location
+  matches: ["input location", "where are inputs", "input cell", "input sheet", "output sheet", "same sheet", "where outputs", "cell location"]
+  answer: "All inputs and outputs live on the Calc sheet. Inputs in B3:B6 (cash, phase 1 burn, phase 2 burn, phase 1 length); outputs in B9:B11 (cash at end of phase 1, phase 2 runway, total runway)."

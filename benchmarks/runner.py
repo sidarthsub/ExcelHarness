@@ -153,13 +153,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-    from benchmarks.headless_builder import run_headless
-    result = asyncio.run(run_headless(
-        task_id=args.task,
+    from datetime import datetime
+    from harness import run_session
+    task_dir = Path(__file__).resolve().parent / "tasks" / args.task
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = Path(__file__).resolve().parent / "runs" / f"{ts}_{args.task}"
+    result = asyncio.run(run_session(
+        task_dir=task_dir,
+        run_dir=run_dir,
         model=args.model,
         time_budget_seconds=args.time_budget,
         max_turns=args.max_turns,
-        skip_planner=args.skip_planner,
     ))
     if args.pretty:
         print(json.dumps(result, indent=2, default=str))

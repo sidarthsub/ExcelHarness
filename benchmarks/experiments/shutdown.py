@@ -133,7 +133,7 @@ def shutdown() -> dict:
     for pat in (
         "benchmarks.experiments.autoresearch",
         "benchmarks.experiments.eval_current",
-        "benchmarks.headless_builder",
+        "harness",
     ):
         pids = _pgrep(pat, exact=False)
         by_name += _kill_pids(pids, f"by-name({pat})")

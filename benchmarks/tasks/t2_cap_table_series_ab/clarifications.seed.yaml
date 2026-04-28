@@ -21,3 +21,15 @@
 - id: pool_at_series_a
   matches: ["pool at series a", "option pool series a", "series a pool change"]
   answer: "None — no expansion in this round."
+
+- id: cap_table_initial_data
+  matches: ["cap table data", "cap table source", "starting shares", "pre-cap table", "founder shares", "seed investor shares", "initial cap", "source data", "placeholder data"]
+  answer: "Use input pre_cap_table.xlsx exactly — do not invent placeholder data. Founder A: 4,000,000 (Common); Founder B: 3,000,000 (Common); Seed 1: 1,500,000 (Preferred Seed); Seed 2: 1,000,000 (Preferred Seed); Options (granted): 300,000; Options (unallocated): 200,000. Total pre-round FD: 10,000,000."
+
+- id: output_keys_snap
+  matches: ["output keys", "nine keys", "9 keys", "results.json", "which output keys", "key names", "snake case"]
+  answer: "Exactly 9 snake_case keys per results.json: preround_total_fd, series_a_price, series_a_new_investor_shares, post_a_fd, series_b_pre_fd, series_b_price, series_b_new_investor_shares, series_b_pool_topup, post_b_fd."
+
+- id: exit_date_anchoring
+  matches: ["exit date", "exit timing", "18 months post", "post-series-b", "exit anchor", "hold period", "xirr date"]
+  answer: "Exit date = 18 months after the Series B close date (NOT Series A). If Series B close is at cell D81, then exit_date = DATE(YEAR(D81), MONTH(D81)+18, DAY(D81)). This produces a 2029 exit distinct from D81 and gives Series B a real hold period."

@@ -1,7 +1,7 @@
 """Autoresearch outer loop.
 
 Spawns a Researcher agent (Claude Agent SDK) whose job is to iteratively
-reduce corpus_loss by editing agents/*.md, benchmarks/headless_builder.py,
+reduce corpus_loss by editing agents/*.md, harness.py, bridge.py, pseudo_bridge.py,
 or benchmarks/pseudo_bridge.py.
 
 Loop per iteration:
@@ -39,8 +39,10 @@ from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
 
 from benchmarks.experiments import store as store_mod
 from benchmarks.experiments.eval_current import (
-    HOLDOUT_SET, VISIBLE_SET, run_eval, resolve_task_set, rotate_sets,
+    DEFAULT_SEEDS_PER_TIER, HOLDOUT_SET, VISIBLE_SET, run_eval,
+    resolve_task_set, rotate_sets,
 )
+from benchmarks.experiments.loss import _tier_from_task_id
 
 
 log = logging.getLogger("autoresearch")
@@ -143,7 +145,7 @@ def _check_for_tier_leaks(branch: str) -> str | None:
 
     Returns a reject reason string, or None if the diff is clean. Only
     inspects files in the Researcher's editable scope so legitimate reads
-    of task_meta inside files we own (we read tier in headless_builder.py
+    of task_meta inside files we own (e.g. harness.run_session reads tier
     just for the result.json metadata) don't false-positive — those lines
     aren't ADDED in this iter's diff.
 
@@ -154,8 +156,10 @@ def _check_for_tier_leaks(branch: str) -> str | None:
     scope = [
         "agents/builder_v3.md",
         "agents/planner_v3.md",
-        "benchmarks/headless_builder.py",
-        "benchmarks/pseudo_bridge.py",
+        "agents/evaluator_v3.md",
+        "harness.py",
+        "bridge.py",
+        "pseudo_bridge.py",
     ]
     diff = _git("diff", "main", "--unified=0", "--", *scope, check=False)
     current_file: str | None = None
@@ -187,26 +191,26 @@ def _check_for_tier_leaks(branch: str) -> str | None:
     return None
 
 
+_EDITABLE_PATHS = (
+    "agents/builder_v3.md",
+    "agents/planner_v3.md",
+    "agents/evaluator_v3.md",
+    "harness.py",
+    "bridge.py",
+    "pseudo_bridge.py",
+)
+
+
 def _revert_working_tree() -> None:
-    # Restore every tracked file in the scope the Researcher is allowed to edit.
-    for rel in (
-        "agents/builder_v3.md",
-        "agents/planner_v3.md",
-        "benchmarks/headless_builder.py",
-        "benchmarks/pseudo_bridge.py",
-    ):
+    """Restore every tracked file in the Researcher-editable scope."""
+    for rel in _EDITABLE_PATHS:
         p = ROOT / rel
         if p.exists():
             _git("checkout", "--", rel, check=False)
 
 
 def _commit_iteration(label: str, loss: float) -> str:
-    _git("add",
-         "agents/builder_v3.md",
-         "agents/planner_v3.md",
-         "benchmarks/headless_builder.py",
-         "benchmarks/pseudo_bridge.py",
-         check=False)
+    _git("add", *_EDITABLE_PATHS, check=False)
     _git("commit", "-m",
          f"autoresearch {label}: corpus_loss -> {loss:.4f}",
          check=False)
@@ -227,16 +231,25 @@ def _build_researcher_options() -> ClaudeAgentOptions:
     would do without pre-injection.
     """
     system_prompt = (AGENTS_DIR / "researcher.md").read_text()
+    # Editable scope = system under test only:
+    #   - agents/*.md (planner, builder, evaluator prompts)
+    #   - harness.py (orchestration)
+    #   - bridge.py / pseudo_bridge.py (builder API + impl)
+    # Everything under benchmarks/ is the eval substrate and is intentionally
+    # NOT in the allowed_tools — letting the Researcher edit oracle.py,
+    # grader.py, loss.py, eval_current.py, or task definitions would let it
+    # cheat by tuning the test rather than the system.
     allowed = [
         "Read", "Glob", "Grep",
         f"Edit({AGENTS_DIR}/builder_v3.md)",
         f"Edit({AGENTS_DIR}/planner_v3.md)",
-        f"Edit({BENCH_ROOT}/headless_builder.py)",
-        f"Edit({BENCH_ROOT}/pseudo_bridge.py)",
+        f"Edit({AGENTS_DIR}/evaluator_v3.md)",
+        f"Edit({ROOT}/harness.py)",
+        f"Edit({ROOT}/bridge.py)",
+        f"Edit({ROOT}/pseudo_bridge.py)",
         f"Write({PROPOSALS_DIR}/iter_*.md)",
         # Eval invocation moved to the orchestrator — Researcher must not
-        # run eval_current itself (was producing stale background-task
-        # coordination bugs). These reads are still useful for context.
+        # run eval itself. These reads are still useful for context.
         "Bash(cat benchmarks/experiments/proposals/*)",
         "Bash(cat benchmarks/experiments/history.jsonl)",
         "Bash(git diff*)",
@@ -263,8 +276,10 @@ def _build_researcher_options() -> ClaudeAgentOptions:
 _PREINJECT_PATHS = [
     "agents/builder_v3.md",
     "agents/planner_v3.md",
-    "benchmarks/headless_builder.py",
-    "benchmarks/pseudo_bridge.py",
+    "agents/evaluator_v3.md",
+    "harness.py",
+    "bridge.py",
+    "pseudo_bridge.py",
 ]
 
 
@@ -369,20 +384,27 @@ def _load_latest_eval_for(label: str) -> dict | None:
 
 def _query_pass_counts(conn, label_pattern: str, tasks: list[str],
                        latest_n: int = 3,
+                       latest_n_per_tier: dict[int, int] | None = None,
                        threshold: float = PASS_ACCURACY_THRESHOLD) -> dict[str, int]:
-    """Per-task count of seeds (latest `latest_n`) whose accuracy >= threshold.
+    """Per-task count of seeds whose accuracy >= threshold.
+
+    LIMIT per task is `latest_n_per_tier[tier]` when provided for that
+    tier, else `latest_n`. Should match the tier's seed count from the
+    eval that produced the rows so we count exactly that eval's cells.
 
     `label_pattern` accepts SQL LIKE syntax — pass `'baseline%'` for prefix
     matching across reused-baseline rows, or an exact label like
-    `'iter1_visible'` for a specific iter's eval. (Without `%`, LIKE behaves
-    as exact match.)
+    `'iter1_visible'` for a specific iter's eval.
     """
     out: dict[str, int] = {}
     for task_id in tasks:
+        n = latest_n
+        if latest_n_per_tier is not None:
+            n = latest_n_per_tier.get(_tier_from_task_id(task_id), latest_n)
         cur = conn.execute(
             "SELECT accuracy FROM runs WHERE label LIKE ? AND task_id = ? "
             "ORDER BY id DESC LIMIT ?",
-            (label_pattern, task_id, latest_n),
+            (label_pattern, task_id, n),
         )
         accs = [r[0] for r in cur.fetchall() if r[0] is not None]
         out[task_id] = sum(1 for a in accs if a >= threshold)
@@ -421,8 +443,14 @@ def _paired_delta(baseline: dict, candidate_label: str, tasks: list[str]) -> dic
     conn = store_mod.connect()
     try:
         candidate_per_task = store_mod.per_task_losses(conn, candidate_label)
-        baseline_pass = _query_pass_counts(conn, baseline_label_pattern, tasks)
-        candidate_pass = _query_pass_counts(conn, candidate_label, tasks)
+        baseline_pass = _query_pass_counts(
+            conn, baseline_label_pattern, tasks,
+            latest_n_per_tier=DEFAULT_SEEDS_PER_TIER,
+        )
+        candidate_pass = _query_pass_counts(
+            conn, candidate_label, tasks,
+            latest_n_per_tier=DEFAULT_SEEDS_PER_TIER,
+        )
     finally:
         conn.close()
 
@@ -483,6 +511,7 @@ async def _run_holdout(holdout_tasks: list[str]) -> dict[str, Any]:
     return await run_eval(
         tasks=holdout_tasks,
         seeds=3,
+        seeds_per_tier=DEFAULT_SEEDS_PER_TIER,
         label=f"holdout_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
         model="sonnet",
         skip_planner=False,
@@ -501,6 +530,7 @@ async def _run_iter_visible(iter_n: int, visible_tasks: list[str]) -> dict[str, 
     return await run_eval(
         tasks=visible_tasks,
         seeds=3,
+        seeds_per_tier=DEFAULT_SEEDS_PER_TIER,
         label=f"iter{iter_n}_visible",
         model="sonnet",
         skip_planner=False,
@@ -517,29 +547,36 @@ def _append_history(entry: dict) -> None:
 
 
 def _try_reuse_baseline(label_prefix: str, tasks: list[str],
-                        min_seeds: int = 2) -> dict | None:
+                        min_seeds: int = 2,
+                        min_seeds_per_tier: dict[int, int] | None = None) -> dict | None:
     """Reconstruct a baseline eval report from existing store rows.
 
     Returns None if we don't have enough coverage to avoid a fresh run.
-    Requires at least `min_seeds` rows per task, all under a label starting
-    with `label_prefix` (e.g. "baseline" or "holdout_"). Reads the raw
-    result.json off disk to recompute corpus_loss via the current loss
-    function — so any recent loss tweak is reflected in the reused number.
+    Per-task minimum is `min_seeds_per_tier[tier]` when provided for that
+    tier, otherwise `min_seeds`. Reads the raw result.json off disk to
+    recompute corpus_loss via the current loss function — so any recent
+    loss tweak is reflected in the reused number.
     """
     from benchmarks.experiments.loss import corpus_loss as _corpus_loss
+
+    def _required(task_id: str) -> int:
+        if min_seeds_per_tier is None:
+            return min_seeds
+        return min_seeds_per_tier.get(_tier_from_task_id(task_id), min_seeds)
 
     conn = store_mod.connect()
     try:
         rows: list[dict] = []
         for task_id in tasks:
+            need = _required(task_id)
             cur = conn.execute(
                 """SELECT result_json_path FROM runs
                     WHERE label LIKE ? AND task_id = ?
                     ORDER BY id DESC LIMIT ?""",
-                (f"{label_prefix}%", task_id, min_seeds),
+                (f"{label_prefix}%", task_id, need),
             )
             cells = [dict(r) for r in cur.fetchall()]
-            if len(cells) < min_seeds:
+            if len(cells) < need:
                 return None
             rows.extend(cells)
     finally:
@@ -728,17 +765,21 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
                   seed=seed)
 
     # Baseline: try to reuse existing store rows before spending on a fresh eval.
-    # min_seeds=3 to match the iter visible eval — fewer-seed reuse made
-    # paired comparisons noisy (1-seed baseline vs 3-seed candidate had
-    # ~0.5 pseudo-deltas on accuracy alone).
-    baseline_eval = _try_reuse_baseline("baseline", visible_tasks, min_seeds=3)
+    # Reuse threshold tracks DEFAULT_SEEDS_PER_TIER so each tier has the same
+    # sample count it would get in a fresh run (paired-Δ noise scales with
+    # mismatched seed counts between baseline and candidate).
+    baseline_eval = _try_reuse_baseline(
+        "baseline", visible_tasks,
+        min_seeds_per_tier=DEFAULT_SEEDS_PER_TIER,
+    )
     if baseline_eval is not None:
         log.info(f"reusing stored baseline — corpus_loss={baseline_eval['corpus_loss']:.4f} "
                  f"(n={baseline_eval['n_runs']} over {len(visible_tasks)} tasks)")
     else:
         log.info(f"no usable stored baseline — running fresh on visible set {visible_tasks}…")
         baseline_eval = await run_eval(
-            tasks=visible_tasks, seeds=3, label="baseline",  # 3 seeds for variance control (see paired comparison)
+            tasks=visible_tasks, seeds=3, seeds_per_tier=DEFAULT_SEEDS_PER_TIER,
+            label="baseline",
             model="sonnet", skip_planner=False,
             time_budget=VISIBLE_TIME_BUDGET, max_turns=40, parallel=DEFAULT_PARALLEL,
         )
@@ -754,7 +795,10 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
     holdout_baseline = None
     if not skip_holdout:
         _write_status(phase="holdout_baseline")
-        holdout_baseline = _try_reuse_baseline("holdout_", holdout_tasks, min_seeds=3)
+        holdout_baseline = _try_reuse_baseline(
+            "holdout_", holdout_tasks,
+            min_seeds_per_tier=DEFAULT_SEEDS_PER_TIER,
+        )
         if holdout_baseline is not None:
             log.info(f"reusing stored holdout baseline — "
                      f"corpus_loss={holdout_baseline['corpus_loss']:.4f}")

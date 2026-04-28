@@ -104,8 +104,8 @@ def cold_cost_from_result(result: dict) -> float:
     planner_usage = {
         "input_tokens": planner_stats.get("planner_input_tokens") or 0,
         "output_tokens": planner_stats.get("planner_output_tokens") or 0,
-        # The current headless_builder doesn't record planner cache
-        # buckets separately. Treat absent as zero — will under-report
+        # The harness aggregates planner usage by call-bucket but not
+        # cache buckets separately. Treat absent as zero — will under-report
         # slightly vs. true cold cost, but consistently across runs.
         "cache_creation_input_tokens": planner_stats.get("planner_cache_creation_input_tokens") or 0,
         "cache_read_input_tokens": planner_stats.get("planner_cache_read_input_tokens") or 0,

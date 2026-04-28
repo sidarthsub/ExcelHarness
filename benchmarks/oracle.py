@@ -60,6 +60,14 @@ ORACLE_SYSTEM = """You are simulating a user who wrote a brief for a financial m
 You are NOT an engineer or analyst. You have access only to the CONTEXT block,
 which describes what you (the user) want and what defaults you'd reasonably pick.
 
+You may also receive a SEEDS block — pre-decided answers for known recurring
+ambiguities. SEEDS take precedence over CONTEXT and over your own reasoning.
+Match a question to a seed by topic, NOT by exact wording: a seed labeled
+"exit_date_anchoring" with matches like ["exit date", "hold period"] applies
+to any question asking about exit timing, hold-period anchoring, XIRR dates,
+etc. — even when the question's surface wording is different. When you find
+a topic-matching seed, return its `answer` VERBATIM (do not paraphrase).
+
 When the assistant asks you clarification questions, answer in the following
 format, and nothing else:
 
@@ -68,10 +76,11 @@ CLARIFICATIONS:
 - <question_id>: <concise answer, one sentence>
 
 Rules:
-- Answer only from the CONTEXT. If context doesn't cover it, say
+- If a SEED entry matches the question's topic, return its `answer` verbatim.
+- Otherwise, answer from CONTEXT. If CONTEXT doesn't cover it, say
   "Your call — default: <the most common industry practice>".
-- NEVER reveal cell addresses, formula text, or specific layout. You only
-  know intent, not implementation.
+- NEVER reveal cell addresses, formula text, or specific layout — UNLESS
+  a seed answer contains them, in which case repeat the seed verbatim.
 - Be concise. One sentence per answer.
 - If a question was already answered in an earlier turn, repeat that answer.
 - Answer every question that appears in the input, in the same order.
@@ -95,11 +104,44 @@ class OracleConfig:
             self.seed_entries = data if isinstance(data, list) else []
 
 
+# Filler words that don't carry concept signal. Kept tight on purpose —
+# we want to keep finance-relevant terms (rate, basis, cap) and only strip
+# question-grammar words.
+_STOPWORDS: frozenset[str] = frozenset({
+    "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at",
+    "for", "with", "from", "by", "as", "is", "are", "was", "were", "be",
+    "this", "that", "these", "those", "it", "its", "i", "we", "you",
+    "should", "would", "could", "do", "does", "did", "have", "has", "had",
+    "what", "which", "how", "where", "when", "why", "who", "whom",
+    "if", "then", "than", "so", "such", "any", "all", "each",
+    "use", "used", "using", "make", "go", "come", "get",
+    "please", "thanks", "thank",
+})
+
+
+def _content_tokens(s: str, min_len: int = 3) -> set[str]:
+    """Length-≥min_len lowercase alphabetic tokens with stopwords removed.
+
+    Used to compute fuzzy overlap between question text and seed match
+    phrases, and to canonicalize cache keys so re-phrasings collide."""
+    return {t for t in _TOKEN_RE.findall(s.lower())
+            if len(t) >= min_len and t not in _STOPWORDS}
+
+
+def _canonicalize_qtext(qtext: str) -> str:
+    """Stable string form of a question for cache keying.
+
+    Drops word order, casing, punctuation, and stopwords. Two questions
+    that ask the same thing in different words produce the same string.
+    """
+    return " ".join(sorted(_content_tokens(qtext)))
+
+
 def _hash_key(task_id: str, qtext: str) -> str:
     h = hashlib.sha256()
     h.update(task_id.encode())
     h.update(b"\x00")
-    h.update(qtext.encode())
+    h.update(_canonicalize_qtext(qtext).encode())
     return h.hexdigest()[:20]
 
 
@@ -119,45 +161,31 @@ def _save_cache(path: Path, cache: dict) -> None:
 _TOKEN_RE = re.compile(r"[a-z]+")
 
 
-def _id_tokens(s: str, min_len: int = 3) -> set[str]:
-    """Extract length-≥min_len lowercase alphabetic tokens from a snake_case
-    or whitespace-delimited phrase. Used to compare concept-overlap between
-    a question's id and a seed entry's identifying terms."""
-    return {t for t in _TOKEN_RE.findall(s.lower()) if len(t) >= min_len}
+def _format_seeds(seed_entries: list[dict]) -> str:
+    """Format seed entries as a SEEDS block for the oracle prompt.
 
-
-def _seed_match(entry: dict, qtext: str, qid: str) -> bool:
-    """Match a question to a seed entry only when both signals agree:
-
-    1. One of the seed's `matches:` phrases appears as a substring in the
-       question text.
-    2. The question's id shares a concept token with the seed's id or
-       one of its match phrases.
-
-    Without (2), incidental keywords in the question text would silently
-    bind a seed's answer to the wrong question id. Concretely: an
-    `mezz_interest_type` question whose text mentions "subtracted from
-    FCF" would inherit the `fcf_definition` seed's answer — observed
-    on t2_lbo_mini seed 03645c.
-
-    If the qid has no concept tokens (length-≥3 alphabetic; e.g. "q1"),
-    fall back to phrase-only matching since there's nothing to align on.
+    Each entry shows id, topic phrases (so the LLM knows what kinds of
+    questions it covers), and the verbatim answer to return.
     """
-    matches = entry.get("matches") or []
-    ql = qtext.lower()
-    if not any(m.lower() in ql for m in matches):
-        return False
-    qid_tokens = _id_tokens(qid)
-    if not qid_tokens:
-        return True
-    seed_tokens = _id_tokens(entry.get("id", ""))
-    for m in matches:
-        seed_tokens |= _id_tokens(m)
-    return bool(qid_tokens & seed_tokens)
+    if not seed_entries:
+        return ""
+    lines = ["SEEDS (return the `answer` verbatim when a question matches by topic):"]
+    for e in seed_entries:
+        sid = e.get("id", "")
+        matches = e.get("matches") or []
+        ans = e.get("answer", "")
+        topic = ", ".join(matches) if matches else "(no topics)"
+        lines.append(f"- id: {sid}")
+        lines.append(f"  topics: {topic}")
+        lines.append(f"  answer: {ans}")
+    return "\n".join(lines)
 
 
 async def _llm_resolve(pending: list[dict], cfg: OracleConfig) -> tuple[str, dict]:
     """One Claude Agent SDK call to answer the pending questions.
+
+    Seeds are inlined into the prompt; the oracle does the topic-matching
+    and returns either a seed answer verbatim or a context-based answer.
 
     Returns (text_response, usage_stats).
     """
@@ -169,7 +197,10 @@ async def _llm_resolve(pending: list[dict], cfg: OracleConfig) -> tuple[str, dic
           "choices": q.get("choices", [])} for q in pending],
         indent=2,
     )
+    seeds_block = _format_seeds(cfg.seed_entries)
+    seeds_prefix = f"{seeds_block}\n\n" if seeds_block else ""
     prompt = (
+        f"{seeds_prefix}"
         f"CONTEXT:\n{cfg.context_md}\n\n"
         f"QUESTIONS (JSON array):\n{user_block}\n\n"
         "Produce the CLARIFICATIONS block now."
@@ -214,7 +245,10 @@ async def resolve_questions(
     stats = {"seed_hits": 0, "cache_hits": 0, "llm_calls": 0,
              "over_budget": 0, "tokens_in": 0, "tokens_out": 0, "cost_dollars": 0.0}
 
-    # 1 + 2: seed and cache resolution
+    # Resolution order: seed-by-id (exact qid match) → cache → LLM (with seeds inlined).
+    # The LLM does semantic seed-topic matching, so we no longer keyword-match in code —
+    # this eliminates the brittle substring/token-overlap bugs that caused re-phrased
+    # questions to miss their seed and fall through to stochastic oracle answers.
     pending: list[dict] = []
     for q in questions:
         qid = q.get("id", "")
@@ -225,25 +259,12 @@ async def resolve_questions(
             stats["over_budget"] += 1
             continue
 
-        # seed by id
         seed_by_id = next((s for s in cfg.seed_entries if s.get("id") == qid), None)
         if seed_by_id and "answer" in seed_by_id:
             answers[qid] = seed_by_id["answer"]
             stats["seed_hits"] += 1
             continue
 
-        # seed by fuzzy phrase
-        seed_fuzzy = next(
-            (s for s in cfg.seed_entries
-             if _seed_match(s, qtext, qid)),
-            None,
-        )
-        if seed_fuzzy and "answer" in seed_fuzzy:
-            answers[qid] = seed_fuzzy["answer"]
-            stats["seed_hits"] += 1
-            continue
-
-        # cache
         key = _hash_key(cfg.task_id, qtext)
         if key in cache:
             answers[qid] = cache[key]
@@ -252,7 +273,6 @@ async def resolve_questions(
 
         pending.append(q)
 
-    # 3: LLM call for anything left
     if pending:
         text, usage = await _llm_resolve(pending, cfg)
         stats["llm_calls"] += 1
@@ -260,12 +280,16 @@ async def resolve_questions(
         stats["tokens_out"] += usage["output_tokens"]
         stats["cost_dollars"] += usage["cost_dollars"]
         parsed = parse_clarifications_block(text)
+        seed_answers = {s["answer"] for s in cfg.seed_entries if "answer" in s}
         for q in pending:
             qid = q.get("id", "")
             qtext = q.get("question", "")
             ans = parsed.get(qid) or parsed.get(qid.strip()) or "Your call — pick the most common industry default."
             answers[qid] = ans
             cache[_hash_key(cfg.task_id, qtext)] = ans
+            # Post-hoc: an LLM answer that exactly matches a seed counts as a seed hit.
+            if ans in seed_answers:
+                stats["seed_hits"] += 1
         _save_cache(cfg.cache_path, cache)
 
     return answers, stats

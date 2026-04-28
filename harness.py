@@ -2,7 +2,7 @@
 """ExcelHarness v3 — single-process live-Excel harness.
 
 Flow:
-  1. Start BridgeServer (HTTPS + WSS).
+  1. Start PseudoBridgeServer (HTTPS + WSS).
   2. Wait for add-in connection.
   3. Read brief from user via chat.
   4. Run Planner phase (ambiguity Q&A -> spec -> self-review).
@@ -25,7 +25,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("harness")
 
-from bridge_server import BridgeServer
+from pseudo_bridge import PseudoBridgeServer
+from benchmarks.oracle import OracleConfig, resolve_questions
 from session import Session
 
 from claude_agent_sdk import query, ClaudeSDKClient
@@ -39,7 +40,6 @@ from claude_agent_sdk.types import (
 import jsonschema
 
 ROOT = Path(__file__).parent
-CERTS = ROOT / "officejs-prototype" / "certs"
 AGENTS_DIR = ROOT / "agents"
 
 # Session-level usage accumulator. Populated by _track_usage() on every
@@ -274,13 +274,15 @@ def build_context_for_planner(session: Session, brief: str) -> str:
     for f in sorted(session.input_dir.glob("*.txt")):
         parts.append(f"## Input document: {f.name}\n{f.read_text()}")
 
-    # Include formula dumps
-    for dump_dir in sorted((session.input_dir / "dumps").iterdir()):
-        formulas_dir = dump_dir / "formulas"
-        if not formulas_dir.exists():
-            continue
-        for f in sorted(formulas_dir.glob("*.txt")):
-            parts.append(f"## Formula dump: {f.name}\n{f.read_text()}")
+    # Include formula dumps (may be absent if task has no xlsx inputs)
+    dumps_root = session.input_dir / "dumps"
+    if dumps_root.exists():
+        for dump_dir in sorted(dumps_root.iterdir()):
+            formulas_dir = dump_dir / "formulas"
+            if not formulas_dir.exists():
+                continue
+            for f in sorted(formulas_dir.glob("*.txt")):
+                parts.append(f"## Formula dump: {f.name}\n{f.read_text()}")
     return "\n\n---\n\n".join(parts)
 
 
@@ -293,19 +295,19 @@ def build_context_for_builder(session: Session, spec: dict) -> str:
 
     parts.append(f"## bridge.py\n{(ROOT / 'bridge.py').read_text()}")
 
-    # Deduplicated styles — one per sheet type
-    dump_dirs = sorted((session.input_dir / "dumps").iterdir())
+    # Reference dumps — may be absent if the task has no xlsx inputs.
+    dumps_root = session.input_dir / "dumps"
+    dump_dirs: list[Path] = sorted(dumps_root.iterdir()) if dumps_root.exists() else []
+
     for f in _dedupe_styles(dump_dirs):
         parts.append(f"## Style: {f.name}\n{f.read_text()}")
 
-    # All formula text dumps — builder needs data sources + reference formulas
     for dump_dir in dump_dirs:
         formulas_dir = dump_dir / "formulas"
         if formulas_dir.exists():
             for f in sorted(formulas_dir.glob("*.txt")):
                 parts.append(f"## Formulas: {f.name}\n{f.read_text()}")
 
-    # List screenshot paths so builder can Read them for visual reference
     screenshots = []
     for dump_dir in dump_dirs:
         ss_dir = dump_dir / "screenshots"
@@ -318,27 +320,14 @@ def build_context_for_builder(session: Session, spec: dict) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-async def wait_for_addin(server: BridgeServer, timeout: float = 300.0) -> None:
-    """Block until the add-in connects."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while server._addin_ws is None:
-        if asyncio.get_event_loop().time() > deadline:
-            raise RuntimeError("Timed out waiting for add-in to connect")
-        await asyncio.sleep(0.2)
+async def run_planner(session: Session, oracle_cfg: OracleConfig, brief: str,
+                      planner_context: str | None = None) -> tuple[dict, dict]:
+    """Planner using ClaudeSDKClient — single session, all passes share context.
 
-
-async def ask_user(server: BridgeServer, prompt: str) -> str:
-    """Send a prompt to the taskpane chat and wait for the user's reply."""
-    await server.send_chat(prompt)
-    while True:
-        pending = server.chat_queue.drain_all()
-        if pending:
-            return pending[-1]
-        await asyncio.sleep(0.3)
-
-
-async def run_planner(session: Session, server: BridgeServer, brief: str, planner_context: str | None = None) -> dict:
-    """Planner using ClaudeSDKClient — single session, all passes share context."""
+    Returns (spec, oracle_stats). oracle_stats is the resolve_questions
+    output: {seed_hits, cache_hits, llm_calls, over_budget, tokens_in,
+    tokens_out, cost_dollars}.
+    """
     prompt = (AGENTS_DIR / "planner_v3.md").read_text()
     schema = json.loads((ROOT / "schemas" / "model_spec.schema.json").read_text())
     spec_path = session.run_dir / "model_spec.json"
@@ -377,7 +366,7 @@ async def run_planner(session: Session, server: BridgeServer, brief: str, planne
         mark("planner_connected")
 
         # --- Pass 1: Ambiguities ---
-        await server.send_chat("Analyzing your brief for ambiguities...")
+        log.info("planner: analyzing brief for ambiguities")
 
         pass1_msg = f"SCHEMA: {ROOT / 'schemas' / 'model_spec.schema.json'}\n\n"
         if planner_context:
@@ -397,80 +386,27 @@ async def run_planner(session: Session, server: BridgeServer, brief: str, planne
             m = re.search(r"\[.*\]", pass1_text, re.DOTALL)
             questions = json.loads(m.group(0)) if m else []
 
-        # --- Ask user each question via chat, with inline pruning by the Planner ---
-        # After each answer we ask the Planner (same stateful session, context
-        # cached) which remaining questions are now resolved and which still
-        # need asking. This avoids redundant questions without adding a new
-        # agent — the Planner already has the full spec context.
+        # --- Resolve all clarifications via the oracle in a single batch ---
+        # In production this is a chat-driven Q&A; in headless the oracle reads
+        # the task's clarifications.seed.yaml + context.md and answers all
+        # questions at once. The interactive per-answer pruning loop is moot
+        # here because oracle resolution is atomic.
         clarifications: dict[str, str] = {}
-        remaining: list[dict] = list(questions)
-        pruned_count = 0
-
-        while remaining:
-            q = remaining.pop(0)
-            qid = q.get("id", "unknown")
-            question_text = q.get("question", "")
-            choices = q.get("choices", [])
-
-            msg = f"**{question_text}**"
-            if q.get("context"):
-                msg += f"\n\n_{q['context']}_"
-            if choices:
-                msg += "\n\nOptions:\n" + "\n".join(f"  {i+1}. {c}" for i, c in enumerate(choices))
-
-            answer = await ask_user(server, msg)
-            clarifications[qid] = answer
-            session.append_clarification(qid, answer)
-            session.append_chat("agent", msg)
-            session.append_chat("user", answer)
-
-            # Prune remaining questions based on the latest answer.
-            if remaining:
-                pruned_count += 1
-                prune_msg = (
-                    f"The user just answered `{qid}` with: {answer}\n\n"
-                    f"Here are the STILL-PENDING questions from Pass 1, as a JSON array:\n"
-                    f"{json.dumps(remaining, indent=2)}\n\n"
-                    "Given this answer (and all prior answers), return a JSON object "
-                    "indicating which pending questions are now resolved by strong implication, "
-                    "and which still genuinely need to be asked:\n"
-                    "```json\n"
-                    "{\n"
-                    '  "skip": [{"id": "question_id", "derived_answer": "concise answer"}],\n'
-                    '  "ask": ["question_id_still_needed", "..."]\n'
-                    "}\n"
-                    "```\n"
-                    "Every pending id must appear in exactly one of `skip` or `ask`. "
-                    "When in doubt, put it in `ask`. Respond with ONLY the JSON object."
-                )
-                prune_text = await get_response(f"prune_{pruned_count}", prune_msg)
-                pm = re.search(r"\{.*\}", prune_text, re.DOTALL)
-                if pm:
-                    try:
-                        data = json.loads(pm.group(0))
-                        skip = data.get("skip", []) or []
-                        ask = set(data.get("ask", []) or [])
-                        skipped_ids = {s.get("id"): s.get("derived_answer", "") for s in skip if s.get("id")}
-                        if skipped_ids:
-                            for sid, derived in skipped_ids.items():
-                                clarifications[sid] = f"(auto-derived from prior answer) {derived}"
-                                session.append_clarification(sid, clarifications[sid])
-                            skipped_list = ", ".join(skipped_ids.keys())
-                            log.info(f"Planner pruned {len(skipped_ids)} question(s): {skipped_list}")
-                            await server.send_chat(
-                                f"Skipping {len(skipped_ids)} question(s) resolved by your last answer: {skipped_list}"
-                            )
-                        # Keep only questions still flagged as `ask` (and not in `skip`).
-                        remaining = [
-                            rq for rq in remaining
-                            if rq.get("id") in ask and rq.get("id") not in skipped_ids
-                        ]
-                    except json.JSONDecodeError:
-                        log.warning(f"Prune pass {pruned_count} returned unparsable JSON; asking all remaining.")
+        oracle_stats: dict = {"seed_hits": 0, "cache_hits": 0, "llm_calls": 0,
+                              "over_budget": 0, "tokens_in": 0, "tokens_out": 0,
+                              "cost_dollars": 0.0}
+        if questions:
+            log.info(f"planner: {len(questions)} clarifications → oracle")
+            answers, oracle_stats = await resolve_questions(questions, oracle_cfg)
+            for qid, ans in answers.items():
+                clarifications[qid] = ans
+                session.append_clarification(qid, ans)
+            log.info(f"oracle: seed={oracle_stats['seed_hits']} cache={oracle_stats['cache_hits']} "
+                     f"llm={oracle_stats['llm_calls']} over_budget={oracle_stats['over_budget']}")
 
         # --- Pass 2: Full spec (same session — context cached) ---
         mark(f"qa_complete ({len(clarifications)} answers)")
-        await server.send_chat("Generating spec...")
+        log.info("planner: generating spec")
         clarif_text = "\n".join(f"- {k}: {v}" for k, v in clarifications.items())
         pass2_msg = (
             f"CLARIFICATIONS:\n{clarif_text or '(none)'}\n\n"
@@ -491,7 +427,7 @@ async def run_planner(session: Session, server: BridgeServer, brief: str, planne
             if m:
                 extracted = m.group(1) if m.lastindex else m.group(0)
                 spec_path.write_text(extracted)
-                await server.send_chat("Spec extracted from response (Write tool didn't fire).")
+                log.info("planner: spec extracted from response (Write tool didn't fire)")
             else:
                 log.info(f"Pass 2 text preview: {pass2_text[:500]}")
                 raise RuntimeError("Planner did not write model_spec.json and no JSON found in response")
@@ -500,14 +436,14 @@ async def run_planner(session: Session, server: BridgeServer, brief: str, planne
         try:
             jsonschema.validate(instance=spec, schema=schema)
         except jsonschema.ValidationError as e:
-            await server.send_chat(f"Spec failed validation: {e.message}. Fixing...")
+            log.info(f"planner: spec failed validation: {e.message}, fixing")
             fix_text = await get_response("pass2_fix", f"Your spec failed validation: {e.message}\n\nFix it and save again.")
             spec = json.loads(spec_path.read_text())
             jsonschema.validate(instance=spec, schema=schema)
 
         # --- Pass 3: Self-review (same session — has full context) ---
         mark("pass2_validated")
-        await server.send_chat("Reviewing spec...")
+        log.info("planner: self-review")
         pass3_text = await get_response(
             "pass3",
             "Run Pass 3 (self-review). Check for contradictions, overprescription, "
@@ -519,7 +455,7 @@ async def run_planner(session: Session, server: BridgeServer, brief: str, planne
         spec = json.loads(spec_path.read_text())
         jsonschema.validate(instance=spec, schema=schema)
 
-        return spec
+        return spec, oracle_stats
 
     finally:
         try:
@@ -530,7 +466,7 @@ async def run_planner(session: Session, server: BridgeServer, brief: str, planne
 
 async def prepare_eval_input(
     session: Session,
-    server: BridgeServer,
+    server: PseudoBridgeServer,
     checkpoint_description: str,
     spec: dict,
     turn: int,
@@ -557,27 +493,28 @@ async def prepare_eval_input(
     (eval_dir / "checkpoint.md").write_text(checkpoint_description)
     (eval_dir / "spec.json").write_text(json.dumps(spec, indent=2))
 
-    # Snapshot the workbook. During shutdown the add-in can return a partial
-    # response (ok without base64), so gate on both keys before decoding.
-    snap_result = await server.send_command("saveSnapshot", {}, timeout=180.0)
+    # In headless, pseudo_bridge auto-saves the candidate xlsx on every
+    # b.checkpoint() call (see PseudoBridgeServer worker loop). Just read
+    # the live file rather than RPCing for a snapshot.
+    candidate_xlsx = Path(server.output_xlsx)
     xlsx_bytes = b""
     snap_path: Path | None = None
-    if snap_result.get("ok") and snap_result.get("base64"):
-        xlsx_bytes = base64.b64decode(snap_result["base64"])
+    if candidate_xlsx.exists():
+        xlsx_bytes = candidate_xlsx.read_bytes()
         snap_path = session.snapshots_dir / f"turn_{turn}.xlsx"
         snap_path.write_bytes(xlsx_bytes)
-    elif snap_result.get("ok"):
-        log.warning("saveSnapshot returned ok with no base64 payload — treating as snapshot failure.")
+    else:
+        log.warning(f"candidate xlsx not yet on disk: {candidate_xlsx}")
 
-        # Render PNGs
+    # Render PNGs (may be skipped if snap missing or renderer fails — evaluator
+    # still has dumps + spec but its prompt requires screenshots).
+    if snap_path is not None:
         try:
             render_xlsx_to_pngs(snap_path, eval_dir / "screenshots")
         except Exception as e:
-            # Rendering failure is not fatal — evaluator still has dumps + spec.
             log.warning(f"Snapshot render failed: {e}")
 
-    # Dump each sheet from the snapshot xlsx via openpyxl — avoids Office.js
-    # recalc + RPC timeouts that previously capped sheets at 30s.
+    # Dump each sheet from the snapshot xlsx via openpyxl.
     if snap_path is not None:
         try:
             written = dump_xlsx_to_json(snap_path, eval_dir / "dumps")
@@ -672,37 +609,19 @@ async def run_evaluator(eval_dir: Path, input_dumps_dir: Path) -> dict:
     return verdict
 
 
-async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -> None:
+async def run_builder_loop(session: Session, server: PseudoBridgeServer, spec: dict,
+                           candidate_dir: Path, results_contract: str = "",
+                           model: str = "sonnet") -> None:
     """Long-running Builder loop using a stateful ClaudeSDKClient.
 
-    The client maintains conversation state across turns, so the Builder
-    remembers what it built. Between turns, the harness drains the chat
-    queue and injects user messages as the next prompt.
+    The client maintains conversation state across turns. After each turn,
+    the harness sends "continue" so the builder proceeds. Mid-build feedback
+    arrives via fail-files written by the eval watcher (builder_v3.md gates
+    on `ls eval_fail_*.json` before the next sheet and before declaring done).
     """
     prompt = (AGENTS_DIR / "builder_v3.md").read_text()
 
-    # Clear all existing sheets so we start fresh (keep one sheet — Excel requires at least one).
-    try:
-        names_resp = await server.send_command("getSheetNames", {})
-        existing = names_resp.get("sheets", [])
-        if existing:
-            # Create a temp sheet, delete all others, then builder will replace it
-            await server.send_command("createSheet", {"name": "__temp__"})
-            for name in existing:
-                try:
-                    await server.send_command("deleteSheet", {"name": name})
-                except Exception:
-                    pass
-            log.info(f"Cleared {len(existing)} existing sheet(s) for fresh build.")
-    except Exception as e:
-        log.warning(f"could not clear sheets: {e}")
-
-    # Protect the workbook so user can't edit during build (non-fatal if it fails).
-    protect_result = await server.send_command("protectWorkbook", {})
-    if protect_result.get("error"):
-        log.warning(f"Workbook protection failed (non-fatal): {protect_result['error']}")
-
-    # Per-session script directory — clear on every builder start to avoid pollution
+    # Per-session script directory — clear on every builder start to avoid pollution.
     scripts_dir = session.run_dir / "scripts"
     if scripts_dir.exists():
         for old in scripts_dir.glob("*.py"):
@@ -717,30 +636,41 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
             "Read", "Glob", "Grep",
             f"Write({scripts_dir}/builder_*.py)",
             f"Edit({scripts_dir}/builder_*.py)",
+            f"Write({candidate_dir}/results.json)",
+            f"Edit({candidate_dir}/results.json)",
             f"Bash(python3 {scripts_dir}/builder_*.py)",
             "Bash(ls*)", "Bash(cat*)", f"Bash(rm {session.run_dir}/eval_fail_*.json)",
         ],
         permission_mode="bypassPermissions",
         cwd=str(ROOT),
-        model="sonnet",  # Sonnet builder — faster + cheaper than Opus; accuracy validated on prior runs
-        max_thinking_tokens=5000,  # Cap adaptive thinking — without this, Sonnet can burn its full 64K thinking budget (~24 min at 44 t/s) before emitting any output. 5K is enough for tool-call reasoning but bounds the silent stall.
+        model=model,
+        max_thinking_tokens=5000,
         add_dirs=[
-            str(session.input_dir),   # input xlsx + dumps (styles, formulas, screenshots)
-            str(session.run_dir),     # spec, chat log, scripts
+            str(session.input_dir),
+            str(session.run_dir),
         ],
+        env={
+            "BRIDGE_URL": server.base_url,
+            "BRIDGE_VERIFY_TLS": "0",
+        },
     )
     client = ClaudeSDKClient(options=options)
 
-    # Inject everything — spec + bridge + all styles + data source formulas + screenshot paths
     builder_context = build_context_for_builder(session, spec)
     log.info(f"Builder context: {len(builder_context)} chars (~{len(builder_context)//4} tokens)")
 
     initial_msg = (
-        f"The workbook is live at https://localhost:3000. "
+        f"The workbook is at {server.base_url} (pseudo-bridge, headless). "
+        f"Default Bridge() picks it up via the BRIDGE_URL env var.\n"
         f"Write one script per sheet to {scripts_dir}/builder_<SheetName>.py. Edit in place to fix issues, then re-run. "
         f"IMPORTANT: Set column widths explicitly from the style dumps. Do NOT call auto_fit_columns.\n\n"
+        f"On every b.checkpoint(), the workbook auto-saves AND a background evaluator runs. "
+        f"Verdicts land at {session.run_dir}/eval_verdicts/checkpoint_*.json. "
+        f"On failure, an eval_fail_*.json appears in {session.run_dir}/. Glob for these between sheets "
+        f"and before declaring done — fix the relevant script, re-run, delete the fail file.\n\n"
         f"ALL CONTEXT IS BELOW — do NOT use Read to gather text context. "
         f"You may Read screenshot images listed at the bottom for visual reference.\n\n"
+        f"{results_contract}"
         f"{builder_context}"
     )
 
@@ -768,13 +698,10 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
             (verdicts_dir / f"checkpoint_{cp_num}.json").write_text(json.dumps(verdict, indent=2))
 
             if verdict.get("status") == "pass" and xlsx_bytes:
-                # Overwrite the latest-known-good model file each time a checkpoint
-                # passes. Not committed to git — the per-turn snapshots in
-                # session.snapshots_dir already provide recovery history.
                 model_path = session.run_dir / "models"
                 model_path.mkdir(exist_ok=True)
                 (model_path / "model.xlsx").write_bytes(xlsx_bytes)
-                await server.send_chat(f"✓ Eval passed: {description}")
+                log.info(f"eval pass: {description}")
             else:
                 findings_text = "\n".join(
                     f"  - [{f.get('severity', 'error')}] "
@@ -783,40 +710,41 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
                     f"{f.get('issue', '')}"
                     for f in verdict.get("findings", [])
                 )
-                await server.send_chat(f"✗ Eval FAIL: {description}\n{findings_text}")
+                log.info(f"eval FAIL: {description}\n{findings_text}")
 
-            # Write verdict to per-checkpoint file the builder can check
-            # Only write fail files — builder globs for any eval_fail_*.json
+            # Write fail file — builder globs for eval_fail_*.json between sheets
+            # and before declaring done.
             if verdict.get("status") == "fail":
                 fail_file = session.run_dir / f"eval_fail_{cp_num}.json"
                 fail_file.write_text(json.dumps(verdict, indent=2))
         except Exception as e:
-            try:
-                await server.send_chat(f"Checkpoint eval error: {e}")
-            except Exception:
-                pass
+            log.warning(f"checkpoint eval error: {e}")
 
     async def watch_checkpoints():
+        """Poll pseudo_bridge.checkpoint_log for new entries and fire the eval pipeline.
+
+        pseudo_bridge appends to checkpoint_log when the builder calls
+        b.checkpoint(). We track our consumption pointer (last_seen) and
+        spawn run_eval_background for each new entry.
+        """
         nonlocal checkpoint_count
+        last_seen = 0
         while not stop_watcher.is_set():
-            pending_cp = server.pop_pending_checkpoint()
-            if pending_cp is not None:
+            log_len = len(server.checkpoint_log)
+            while last_seen < log_len:
+                cp_entry = server.checkpoint_log[last_seen]
+                last_seen += 1
                 checkpoint_count += 1
                 cp_num = checkpoint_count
+                description = cp_entry.get("description") or f"checkpoint {cp_num}"
                 from timing import mark
-                mark(f"checkpoint_{cp_num}_start: {pending_cp.description}")
+                mark(f"checkpoint_{cp_num}_start: {description}")
                 eval_dir, xlsx_bytes = await prepare_eval_input(
-                    session, server, pending_cp.description, spec, cp_num
+                    session, server, description, spec, cp_num
                 )
                 mark(f"checkpoint_{cp_num}_eval_input_ready")
-
-                # Resolve immediately — builder continues
-                pending_cp.resolve({"status": "pass", "findings": [], "_pending_eval": True})
-                await server.send_chat(f"⏳ Evaluating: {pending_cp.description}...")
-
-                # Spawn eval as independent task — multiple evals can run in parallel
                 task = asyncio.create_task(
-                    run_eval_background(cp_num, pending_cp.description, eval_dir, xlsx_bytes)
+                    run_eval_background(cp_num, description, eval_dir, xlsx_bytes)
                 )
                 eval_tasks.append(task)
             await asyncio.sleep(0.3)
@@ -857,12 +785,10 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
                                 path = tool_input.get("file_path", "")
                                 short = path.split("/")[-1] if "/" in str(path) else path
                                 mark(f"  {tool_name.lower()}:{short}")
-                                await server.send_chat(f"{'Writing' if tool_name == 'Write' else 'Editing'} {short}...")
                             elif tool_name == "Bash":
                                 cmd = str(tool_input.get("command", ""))
                                 if "python3" in cmd and "builder" in cmd:
                                     mark(f"  run_script")
-                                    await server.send_chat(f"Running build script...")
                                 elif "checkpoint" in cmd.lower():
                                     mark(f"  checkpoint_call")
                                 else:
@@ -881,22 +807,36 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
 
             session.append_chat("agent", final_text)
 
-            # Check for completion sentinel
+            # Completion sentinel — but enforce the eval-completion gate before
+            # accepting it. The builder prompt asks the model to wait for pending
+            # evals, but it sometimes declares done eagerly. Without this gate
+            # the evaluator's findings land after the builder has exited and
+            # the fail-file retry loop is functionally inert.
             if "Model complete. Ready for review." in final_text:
-                await server.send_command("unprotectWorkbook", {})
-                await server.send_chat("Session complete. Workbook unprotected for manual edits.")
+                if eval_tasks:
+                    pending = [t for t in eval_tasks if not t.done()]
+                    if pending:
+                        log.info(f"sentinel received; waiting for {len(pending)} pending eval(s)")
+                        await asyncio.gather(*pending, return_exceptions=True)
+                fail_files = sorted(session.run_dir.glob("eval_fail_*.json"))
+                if fail_files:
+                    findings = "\n\n".join(
+                        f"## {ff.name}\n{ff.read_text()}" for ff in fail_files
+                    )
+                    log.info(f"sentinel deferred — {len(fail_files)} fail file(s): "
+                             f"{', '.join(f.name for f in fail_files)}")
+                    await client.query(
+                        f"Pending evaluator failures detected. Address each, re-run "
+                        f"the affected sheet, delete the corresponding fail file with "
+                        f"`rm`, and re-emit the sentinel only when ALL fail files are "
+                        f"gone.\n\n{findings}"
+                    )
+                    continue
+                log.info("builder: completion sentinel verified (no pending fails)")
                 return
 
-            # Drain chat for next turn
-            user_msgs = server.chat_queue.drain_all()
-            if user_msgs:
-                for m in user_msgs:
-                    session.append_chat("user", m)
-                next_prompt = "\n\n".join(user_msgs)
-            else:
-                next_prompt = "continue"
-
-            # Send next turn to the stateful client
+            # No live user messages in headless — just send "continue" between turns.
+            next_prompt = "continue"
             log.info(f"Builder: sending turn {turn + 1} prompt ({len(next_prompt)} chars)...")
             await client.query(next_prompt)
 
@@ -904,123 +844,286 @@ async def run_builder_loop(session: Session, server: BridgeServer, spec: dict) -
         stop_watcher.set()
         await watcher_task
         # Let in-flight evals finish so their verdicts and model.xlsx land
-        # before we tear down. Without this, the final checkpoint's eval
-        # can be orphaned by loop shutdown.
+        # before we tear down.
         if eval_tasks:
-            await server.send_chat(f"Waiting for {len(eval_tasks)} in-flight eval(s) to finish...")
+            log.info(f"waiting for {len(eval_tasks)} in-flight eval(s) to finish")
             await asyncio.gather(*eval_tasks, return_exceptions=True)
         try:
             await client.disconnect()
         except Exception:
             pass
 
-    # Fell out of loop — max turns exceeded
-    await server.send_chat(f"Builder loop hit max turns ({max_turns}). Stopping.")
-    await server.send_command("unprotectWorkbook", {})
+    log.warning(f"builder loop hit max turns ({max_turns})")
+
+
+def _results_contract_block(task_meta: dict, candidate_dir: Path) -> str:
+    """Build the results.json contract section for the Builder prompt.
+
+    If task.yaml defines output_keys, the Builder MUST produce a
+    results.json next to model.xlsx mapping each key to a Sheet!Cell
+    address. Ported from benchmarks/headless_builder.py to keep the
+    headless harness self-contained.
+    """
+    keys = task_meta.get("output_keys") or []
+    if not keys:
+        return ""
+    results_path = candidate_dir / "results.json"
+    lines = [
+        "## Required output artifact: results.json",
+        "",
+        f"Before emitting the completion sentinel, write the file `{results_path}`",
+        "as a JSON object mapping each semantic key to the `Sheet!Cell` address",
+        "containing that value in the workbook. Example:",
+        "",
+        "```json",
+        "{",
+        '  "pre_money_valuation": "Inputs!B4",',
+        '  "post_money_valuation": "Inputs!B6"',
+        "}",
+        "```",
+        "",
+        "Required keys:",
+        "",
+    ]
+    for k in keys:
+        kind = k.get("type", "number")
+        desc = k.get("description", "")
+        note = {"number": "numeric value compared with tolerance",
+                "formula": "numeric value compared AND cell must contain a formula",
+                "text": "text match (reserved)"}.get(kind, "")
+        lines.append(f"- **{k['key']}** ({kind}) — {desc}  [_{note}_]")
+    lines.append("")
+    lines.append("Do NOT write this file until all sheets are built and saved.")
+    lines.append("")
+    return "\n\n---\n\n".join(["\n".join(lines), ""])
+
+
+async def run_session(*, task_dir: Path, run_dir: Path,
+                      model: str = "sonnet",
+                      max_turns: int = 50,
+                      time_budget_seconds: float | None = None,
+                      port: int = 3100) -> dict:
+    """Run the full pipeline (planner P1+oracle, P2, P3, builder ↔ evaluator
+    loop, grade) on one task. Headless — no live UI, no add-in.
+
+    Returns a result dict with grading + usage breakdown matching the
+    contract that benchmarks.experiments.loss + eval_runner expect; also
+    writes `run_dir/result.json`.
+    """
+    import shutil
+    import time as _time
+    import yaml
+
+    t_start = _time.time()
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Session lays out run_dir/{input,scripts,snapshots,...} for us.
+    session = Session(root=ROOT, run_dir=run_dir)
+    log.info(f"session: {session.run_dir}")
+
+    # --- Read task.yaml early so we know about stub_file before staging ---
+    task_yaml_path = task_dir / "task.yaml"
+    task_meta = yaml.safe_load(task_yaml_path.read_text()) if task_yaml_path.exists() else {}
+
+    # --- Stage inputs from task_dir/inputs into session.input_dir ---
+    task_inputs = task_dir / "inputs"
+    if task_inputs.exists():
+        for src in task_inputs.iterdir():
+            dst = session.input_dir / src.name
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+
+    # --- Stage the stub xlsx (if any) into session.input_dir so dump.py picks it up.
+    # The pseudo-bridge starts from a blank workbook; the builder loads the stub via
+    # bridge.copy_sheet_from_input(stub_abs_path, ...) using the absolute path the
+    # builder context surfaces.
+    staged_stub: Path | None = None
+    stub_rel = task_meta.get("stub_file")
+    if stub_rel:
+        stub_src = task_dir / stub_rel
+        if stub_src.exists():
+            staged_stub = session.input_dir / stub_src.name
+            shutil.copy2(stub_src, staged_stub)
+
+    # --- Brief + clarifications ---
+    brief_path = task_dir / "brief.md"
+    brief = brief_path.read_text() if brief_path.exists() else ""
+    session.save_brief(brief)
+
+    # --- Canonical preprocessing: PDF extraction + xlsx dumping (all sheets) ---
+    extract_pdf_inputs(session)
+    preprocess_inputs(session)  # no sheet_filter → dump everything (incl. stub if staged)
+
+    # --- Oracle config (simulated user answering planner clarifications) ---
+    context_path = task_dir / "context.md"
+    oracle_cfg = OracleConfig(
+        task_id=task_dir.name,
+        context_md=context_path.read_text() if context_path.exists() else "",
+        seed_path=task_dir / "clarifications.seed.yaml",
+    )
+
+    # --- Task metadata for results contract ---
+    tier = task_meta.get("tier")
+    cost_budget = task_meta.get("budget", {}).get("cost_dollars") if isinstance(task_meta.get("budget"), dict) else None
+
+    candidate_dir = session.run_dir / "candidate"
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    candidate_xlsx = candidate_dir / "model.xlsx"
+    results_contract = _results_contract_block(task_meta, candidate_dir)
+
+    # If a stub was staged, prepend a directive telling the builder it's the
+    # starting state to copy in (not just a reference). The dump itself is
+    # surfaced via build_context_for_builder.
+    stub_directive = ""
+    if staged_stub is not None:
+        stub_directive = (
+            f"## Starting state\n"
+            f"The workbook starts BLANK. The file `{staged_stub.absolute()}` is the "
+            f"stub — it contains pre-filled inputs the brief assumes are present. "
+            f"As your FIRST step in the build, use `b.copy_sheet_from_input(...)` "
+            f"to load each of its sheets into the candidate workbook. Then proceed "
+            f"with the task.\n\n"
+        )
+
+    # --- Planner context (brief + dumps + clarification stubs) ---
+    planner_context = build_context_for_planner(session, brief)
+
+    # --- Run planner with oracle, then run builder ↔ evaluator loop ---
+    spec: dict | None = None
+    oracle_stats: dict = {"seed_hits": 0, "cache_hits": 0, "llm_calls": 0,
+                          "over_budget": 0, "tokens_in": 0, "tokens_out": 0,
+                          "cost_dollars": 0.0}
+    completed = False
+    terminated_reason = "unknown"
+    grading_err: str | None = None
+    try:
+        with PseudoBridgeServer(output_xlsx=candidate_xlsx, port=port, host="127.0.0.1") as server:
+            spec, oracle_stats = await run_planner(session, oracle_cfg, brief,
+                                                   planner_context=planner_context)
+            log.info(f"spec complete: {len(spec.get('sheets', []))} sheet(s)")
+
+            await run_builder_loop(session, server, spec, candidate_dir,
+                                   results_contract=stub_directive + results_contract,
+                                   model=model)
+            log.info("builder loop done")
+            # run_builder_loop returns on completion sentinel or max_turns;
+            # treat any return without exception as "completed enough to grade".
+            completed = True
+            terminated_reason = "sentinel_or_max_turns"
+    except Exception as e:
+        log.error(f"run_session pipeline error: {type(e).__name__}: {e}")
+        terminated_reason = f"crashed:{type(e).__name__}"
+
+    wall = _time.time() - t_start
+    over_budget = (time_budget_seconds is not None and wall > time_budget_seconds)
+    if over_budget and terminated_reason in ("unknown", "sentinel_or_max_turns"):
+        terminated_reason = "time_budget_exceeded"
+
+    # --- Grade ---
+    from benchmarks.grader import grade
+    graded: dict = {"accuracy": 0.0, "passed": 0, "total": 0,
+                    "weighted_score": 0.0, "total_weight": 0.0, "checks": []}
+    if candidate_xlsx.exists():
+        try:
+            graded = grade(
+                candidate_xlsx=candidate_xlsx,
+                grading_yaml=task_dir / "gold" / "grading.yaml",
+                task_dir=task_dir,
+            )
+        except Exception as e:
+            grading_err = f"{type(e).__name__}: {e}"
+            log.error(f"grader failed: {grading_err}")
+
+    # --- Aggregate session usage into per-agent + dollar totals ---
+    builder_usage = _SESSION_USAGE.get("builder", {})
+    planner_usage = _SESSION_USAGE.get("planner", {})
+    evaluator_usage = _SESSION_USAGE.get("evaluator", {})
+    dollars_total = sum(b.get("cost_usd", 0.0) for b in _SESSION_USAGE.values())
+
+    # planner_stats has historically been a flat dict with prefixed keys
+    # consumed by loss.cold_cost_from_result. Mirror that shape so the
+    # cold-cost accounting in loss.py picks up planner tokens.
+    planner_stats_flat = {
+        "planner_model": model,
+        "planner_input_tokens": planner_usage.get("input", 0),
+        "planner_output_tokens": planner_usage.get("output", 0),
+        "planner_cache_creation_input_tokens": planner_usage.get("cache_w", 0),
+        "planner_cache_read_input_tokens": planner_usage.get("cache_r", 0),
+        "planner_cost_usd": planner_usage.get("cost_usd", 0.0),
+        "planner_calls": planner_usage.get("calls", 0),
+    }
+    evaluator_stats_flat = {
+        "calls": evaluator_usage.get("calls", 0),
+        "cost_usd": evaluator_usage.get("cost_usd", 0.0),
+        "input_tokens": evaluator_usage.get("input", 0),
+        "output_tokens": evaluator_usage.get("output", 0),
+    }
+
+    result = {
+        "task_id": task_dir.name,
+        "tier": tier,
+        "cost_budget_dollars": cost_budget,
+        "run_dir": str(session.run_dir),
+        "candidate": str(candidate_xlsx),
+        "spec_generated": spec is not None,
+        "spec_sheets": len(spec.get("sheets", [])) if spec else 0,
+        "completed": completed,
+        "terminated_reason": terminated_reason,
+        "wall_seconds": wall,
+        "time_budget_seconds": time_budget_seconds,
+        "over_budget": over_budget,
+        "builder_model": model,
+        "builder_usage": builder_usage,
+        "planner_stats": planner_stats_flat,
+        "evaluator_stats": evaluator_stats_flat,
+        "oracle_stats": oracle_stats,
+        "dollars": dollars_total,
+        "accuracy": graded.get("accuracy", 0.0),
+        "passed": graded.get("passed", 0),
+        "total": graded.get("total", 0),
+        "weighted_score": graded.get("weighted_score", 0.0),
+        "total_weight": graded.get("total_weight", 0.0),
+        "checks": graded.get("checks", []),
+        "session_usage": _SESSION_USAGE,
+    }
+    (session.run_dir / "result.json").write_text(json.dumps(result, indent=2, default=str))
+    _log_session_totals()
+    return result
 
 
 async def main() -> None:
-    import sys
-    resume_ts = None
-    for arg in sys.argv[1:]:
-        if arg.startswith("--resume="):
-            resume_ts = arg.split("=", 1)[1]
-        elif arg == "--resume":
-            # Find latest session with a spec
-            runs = sorted((ROOT / "runs").glob("*"), reverse=True)
-            for r in runs:
-                if (r / "model_spec.json").exists():
-                    resume_ts = r.name
-                    break
-    session = Session(root=ROOT, timestamp=resume_ts)
-    log.info(f"Session: {session.run_dir}")
+    """CLI entrypoint. Usage: python3 -m harness --task <task_id> [--run-dir DIR]"""
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--task", required=True, help="task_id under benchmarks/tasks/")
+    ap.add_argument("--run-dir", default=None,
+                    help="Output dir; default: benchmarks/runs/<timestamp>_<task>")
+    ap.add_argument("--model", default="sonnet")
+    ap.add_argument("--max-turns", type=int, default=50)
+    ap.add_argument("--port", type=int, default=3100)
+    args = ap.parse_args()
 
-    server = BridgeServer(
-        host="localhost",
-        http_port=3000,
-        wss_port=3001,
-        cert_path=CERTS / "cert.pem",
-        key_path=CERTS / "key.pem",
+    task_dir = ROOT / "benchmarks" / "tasks" / args.task
+    if not task_dir.exists():
+        raise SystemExit(f"task not found: {task_dir}")
+
+    if args.run_dir:
+        run_dir = Path(args.run_dir)
+    else:
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        run_dir = ROOT / "benchmarks" / "runs" / f"{ts}_{args.task}"
+
+    result = await run_session(
+        task_dir=task_dir, run_dir=run_dir,
+        model=args.model, max_turns=args.max_turns, port=args.port,
     )
-    await server.start()
-    log.info("Bridge server listening on :3000/:3001")
-    log.info("Open Excel with the sideloaded add-in now.")
-
-    try:
-        await wait_for_addin(server)
-        log.info("Add-in connected.")
-
-        # Check if spec already exists (resume from Builder phase)
-        spec_path = session.run_dir / "model_spec.json"
-        log.info(f"Checking for spec at {spec_path} ... exists={spec_path.exists()}")
-        if spec_path.exists():
-            spec = json.loads(spec_path.read_text())
-            log.info(f"Found existing spec with {len(spec['sheets'])} sheets. Sending chat...")
-            await server.send_chat(f"Resuming with existing spec ({len(spec['sheets'])} sheets). Starting Builder...")
-            log.info(f"Chat sent. Jumping to Builder.")
-        else:
-            from timing import mark, reset
-            reset()
-            mark("waiting_for_brief")
-            brief = await ask_user(server, f"Hi. What would you like to build? Drop input files into {session.input_dir} first, then paste your brief.")
-            mark("brief_received")
-            session.save_brief(brief)
-            session.append_chat("user", brief)
-
-            # Extract any PDFs to companion .txt so the planner context
-            # (which globs *.txt) picks them up automatically.
-            extract_pdf_inputs(session)
-
-            # Sheet mapper — user picks which sheets to dump
-            import openpyxl as _xl
-            xlsx_files = sorted(session.input_dir.glob("*.xlsx")) + sorted(session.input_dir.glob("*.xls"))
-            if xlsx_files:
-                mapper_files = []
-                for xlsx in xlsx_files:
-                    try:
-                        wb = _xl.load_workbook(xlsx, read_only=True)
-                        mapper_files.append({"name": xlsx.name, "sheets": wb.sheetnames})
-                        wb.close()
-                    except Exception as e:
-                        log.warning(f"couldn't read {xlsx.name}: {e}")
-                if mapper_files:
-                    mark("sheet_mapper_sent")
-                    selected = await server.send_sheet_mapper(mapper_files)
-                    mark(f"sheet_mapper_done ({sum(len(v) for v in selected.values())} sheets selected)")
-                    # Build sheet filter: map filename -> list of sheet names
-                    sheet_filter = {}
-                    for xlsx in xlsx_files:
-                        if xlsx.name in selected:
-                            sheet_filter[xlsx] = selected[xlsx.name]
-                    xlsx_files = preprocess_inputs(session, sheet_filter=sheet_filter)
-                else:
-                    xlsx_files = preprocess_inputs(session)
-            else:
-                xlsx_files = []
-            mark("dumps_complete")
-            if xlsx_files:
-                await server.send_chat(f"Preprocessed {len(xlsx_files)} input file(s). Starting planning...")
-            else:
-                await server.send_chat("No input xlsx files found. Starting planning...")
-
-            # Build consolidated context and inject into Planner prompt
-            planner_context = build_context_for_planner(session, brief)
-            mark(f"planner_context_built ({len(planner_context)//4} tokens)")
-
-            spec = await run_planner(session, server, brief, planner_context=planner_context)
-            mark("spec_complete")
-            await server.send_chat(f"Spec complete: {len(spec['sheets'])} sheet(s). Saved to {session.run_dir.name}/model_spec.json")
-            log.info(f"Spec saved. Planner phase done.")
-
-        await run_builder_loop(session, server, spec)
-        log.info(f"Builder loop done.")
-    finally:
-        try:
-            await server.send_command("unprotectWorkbook", {})
-        except Exception:
-            pass
-        await server.stop()
-        _log_session_totals()
+    print(json.dumps({"task": args.task, "accuracy": result["accuracy"],
+                      "passed": result["passed"], "total": result["total"],
+                      "run_dir": result["run_dir"]}, indent=2))
 
 
 if __name__ == "__main__":

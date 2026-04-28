@@ -52,6 +52,17 @@ CREATE TABLE IF NOT EXISTS runs (
     builder_model       TEXT,
     planner_used        INTEGER,
 
+    -- Per-run diagnostics from harness.run_session (added with the
+    -- harness migration). New runs populate these; legacy rows leave
+    -- them NULL.
+    oracle_seed_hits    INTEGER,
+    oracle_cache_hits   INTEGER,
+    oracle_llm_calls    INTEGER,
+    oracle_over_budget  INTEGER,
+    evaluator_calls     INTEGER,
+    evaluator_cost_usd  REAL,
+    fail_file_count     INTEGER,
+
     loss                REAL,
     loss_components_json TEXT,
     result_json_path    TEXT NOT NULL
@@ -61,18 +72,47 @@ CREATE INDEX IF NOT EXISTS idx_runs_task_label ON runs(task_id, label);
 CREATE INDEX IF NOT EXISTS idx_runs_ts ON runs(ts);
 """
 
+# Idempotent migrations — applied on every connect() so older DBs pick up
+# the new diagnostic columns without a rebuild. SQLite ignores ALTER TABLE
+# ADD COLUMN if the column already exists *only* if we guard ourselves.
+_MIGRATIONS = [
+    "ALTER TABLE runs ADD COLUMN oracle_seed_hits INTEGER",
+    "ALTER TABLE runs ADD COLUMN oracle_cache_hits INTEGER",
+    "ALTER TABLE runs ADD COLUMN oracle_llm_calls INTEGER",
+    "ALTER TABLE runs ADD COLUMN oracle_over_budget INTEGER",
+    "ALTER TABLE runs ADD COLUMN evaluator_calls INTEGER",
+    "ALTER TABLE runs ADD COLUMN evaluator_cost_usd REAL",
+    "ALTER TABLE runs ADD COLUMN fail_file_count INTEGER",
+]
+
 
 def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    for stmt in _MIGRATIONS:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            # column already exists — that's fine, this is idempotent
+            pass
+    conn.commit()
     return conn
 
 
 def _row_from_result(result: dict, run_dir: Path, label: str | None, seed: int | None,
                      git_sha: str | None) -> dict[str, Any]:
     components = per_run_loss(result)
+    oracle_stats = result.get("oracle_stats") or {}
+    evaluator_stats = result.get("evaluator_stats") or {}
+    # Count fail-files left in the run dir. After the build loop the gate
+    # forces the builder to delete each one as it's addressed; surviving
+    # fail files mean either the builder gave up or the loop hit max_turns.
+    try:
+        fail_count = sum(1 for _ in run_dir.glob("eval_fail_*.json"))
+    except Exception:
+        fail_count = None
     return {
         "run_dir": str(run_dir),
         "task_id": result.get("task_id"),
@@ -93,6 +133,18 @@ def _row_from_result(result: dict, run_dir: Path, label: str | None, seed: int |
         "cost_budget_usd": result.get("cost_budget_dollars"),
         "builder_model": result.get("builder_model"),
         "planner_used": 1 if result.get("spec_generated") else 0,
+        # Oracle stats: planner P1 routes clarifications through
+        # benchmarks.oracle.resolve_questions which returns a stats dict
+        # with seed_hits / cache_hits / llm_calls / over_budget. Surfacing
+        # these per-run lets the dashboard show how often the seed file
+        # actually bites vs. how often we fall through to the LLM oracle.
+        "oracle_seed_hits": oracle_stats.get("seed_hits"),
+        "oracle_cache_hits": oracle_stats.get("cache_hits"),
+        "oracle_llm_calls": oracle_stats.get("llm_calls"),
+        "oracle_over_budget": oracle_stats.get("over_budget"),
+        "evaluator_calls": evaluator_stats.get("calls"),
+        "evaluator_cost_usd": evaluator_stats.get("cost_usd"),
+        "fail_file_count": fail_count,
         "loss": components["loss"],
         "loss_components_json": json.dumps({k: v for k, v in components.items() if k != "loss"}),
         "result_json_path": str(run_dir / "result.json"),

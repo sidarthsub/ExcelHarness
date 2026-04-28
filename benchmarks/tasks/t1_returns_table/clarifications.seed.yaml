@@ -17,3 +17,11 @@
 - id: sheet_name
   matches: ["sheet name", "what to call the sheet", "name the sheet"]
   answer: "Name it exactly 'Returns Analysis' — no prefix, no suffix."
+
+- id: cap_table_as_holder_rows
+  matches: ["option pool row", "cap table structure", "include options", "every share", "all rows", "holder rows", "which holders", "options as holder", "row per holder"]
+  answer: "Every cap table row (including the option pool) is a distinct holder row in Returns Analysis. Total FD = SUM of all holder shares. Each holder — including options — gets pro-rata payout = holder_shares × exit_value / total_FD."
+
+- id: results_json_completeness
+  matches: ["results.json", "json keys", "what to include", "computed cells", "json fields", "output mapping"]
+  answer: "Map all output values to their cells: total_fd, founder_a_pct, founder_a_payout_500m, seed_payout_1b, series_a_payout_2b, total_payout_500m. All values must be live formula cells, not hardcoded."

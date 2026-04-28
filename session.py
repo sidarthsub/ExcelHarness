@@ -7,10 +7,20 @@ from pathlib import Path
 
 
 class Session:
-    def __init__(self, root: Path, timestamp: str | None = None):
+    def __init__(self, root: Path, timestamp: str | None = None,
+                 run_dir: Path | None = None):
+        """Either pass `timestamp` (path becomes root/runs/timestamp) or
+        pass an explicit `run_dir` (used as-is). The latter is what the
+        headless harness uses so per-cell run dirs can live under
+        benchmarks/runs/ instead of root/runs/.
+        """
         self.root = Path(root)
-        self.timestamp = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.run_dir = self.root / "runs" / self.timestamp
+        if run_dir is not None:
+            self.run_dir = Path(run_dir)
+            self.timestamp = self.run_dir.name
+        else:
+            self.timestamp = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S")
+            self.run_dir = self.root / "runs" / self.timestamp
         self.input_dir = self.run_dir / "input"
         self.snapshots_dir = self.run_dir / "snapshots"
         self.screenshots_dir = self.run_dir / "screenshots"

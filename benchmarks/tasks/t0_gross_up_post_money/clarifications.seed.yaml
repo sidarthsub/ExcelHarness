@@ -9,3 +9,19 @@
 - id: rounding
   matches: ["round", "integer", "fractional shares"]
   answer: "Don't round."
+
+- id: output_cell_positions
+  matches: ["output cells", "output position", "where outputs", "which cells", "output rows", "row 9", "rows 9-13", "B9", "B13"]
+  answer: "Five outputs in B9:B13 in this exact order: target_post_fd (B9), new_shares_issued (B10), share_price (B11), pre_money (B12), holder_pct_check (B13)."
+
+- id: results_json_contents
+  matches: ["results.json", "json file", "results file", "what goes in results", "json keys", "output keys"]
+  answer: "Map all five output keys to their B9:B13 cells: target_post_fd → B9, new_shares_issued → B10, share_price → B11, pre_money → B12, holder_pct_check → B13."
+
+- id: holder_meaning
+  matches: ["holder", "who is holder", "existing shareholder", "whose target"]
+  answer: "Holder = the existing shareholder (founder, employee pool, etc.) whose share count and target post-round % drive the solve. target_post_fd = holder_shares / target_pct."
+
+- id: target_pct_format
+  matches: ["target pct", "target format", "decimal percent", "target as decimal", "20% vs 0.2"]
+  answer: "Target post-money % is a decimal (e.g., 0.20 for 20%). The math works as: target_post_fd = holder_shares / target_pct."

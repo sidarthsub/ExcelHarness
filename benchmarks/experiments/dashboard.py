@@ -70,11 +70,16 @@ def _read_last_eval() -> dict | None:
         return None
 
 
+_RUN_COLS = """task_id, label, seed, accuracy, loss, cost_cold_usd, cost_actual_usd,
+               wall_seconds, completed, terminated_reason, ts, tier,
+               oracle_seed_hits, oracle_cache_hits, oracle_llm_calls,
+               oracle_over_budget, evaluator_calls, evaluator_cost_usd,
+               fail_file_count"""
+
+
 def _recent_runs(conn: sqlite3.Connection, limit: int = 60) -> list[dict]:
     cur = conn.execute(
-        """SELECT task_id, label, seed, accuracy, loss, cost_cold_usd, cost_actual_usd,
-                  wall_seconds, completed, terminated_reason, ts, tier
-             FROM runs ORDER BY id DESC LIMIT ?""",
+        f"SELECT {_RUN_COLS} FROM runs ORDER BY id DESC LIMIT ?",
         (limit,),
     )
     return [dict(r) for r in cur.fetchall()]
@@ -84,11 +89,9 @@ def _current_iter_runs(conn: sqlite3.Connection, iter_n: int | None) -> list[dic
     if iter_n is None:
         return []
     cur = conn.execute(
-        """SELECT task_id, label, seed, accuracy, loss, cost_cold_usd, cost_actual_usd,
-                  wall_seconds, completed, terminated_reason, ts, tier
-             FROM runs
-            WHERE label = ? OR label = ?
-            ORDER BY id DESC""",
+        f"""SELECT {_RUN_COLS} FROM runs
+             WHERE label = ? OR label = ?
+             ORDER BY id DESC""",
         (f"iter{iter_n}_canary", f"iter{iter_n}_visible"),
     )
     return [dict(r) for r in cur.fetchall()]

@@ -17,3 +17,11 @@
 - id: section_layout
   matches: ["layout", "section order", "sections"]
   answer: "Four sections in this order: Round sizing, Investor allocations, Cap table mechanics, Preference terms."
+
+- id: metadata_inclusion
+  matches: ["company name", "close date", "metadata", "header block", "administrative", "deal name", "issuer"]
+  answer: "Metadata header (company, security, close date) is optional and not graded. Don't spend effort on it. Focus on the four required quantitative sections."
+
+- id: preference_terms_scope
+  matches: ["preference terms", "participation", "anti-dilution", "dividend", "seniority", "preference detail", "what preference fields"]
+  answer: "Capture only what the term sheet explicitly states: liquidation preference (numeric, e.g., 1.0 with '0.0\"x\"' format) and dividend rate (numeric, e.g., 0.08). Skip participation/anti-dilution/seniority unless the term sheet specifies them."

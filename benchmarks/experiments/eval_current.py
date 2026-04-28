@@ -2,7 +2,7 @@
 
 The Researcher calls this after every edit. It:
 
-  1. Runs `headless_builder.run_headless` for each (task × seed) in the
+  1. Runs `harness.run_session` for each (task × seed) in the
      requested set. Runs are serial by default — the pseudo-bridge drives
      a hidden Excel instance via xlwings, which is not safe to spin up
      concurrently on macOS. `--parallel N` opts into concurrency once
@@ -34,8 +34,24 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.experiments import store as store_mod
-from benchmarks.experiments.loss import corpus_loss, per_run_loss
-from benchmarks.headless_builder import run_headless
+from benchmarks.experiments.loss import corpus_loss, per_run_loss, _tier_from_task_id
+from harness import run_session
+
+
+# Per-tier seed counts. t2 carries 2.5× corpus weight, so 1 t2 cell flipping
+# accuracy 0.55→0.17 swings corpus_loss by ~0.2. Doubling t2 samples (3→4)
+# shrinks t2-mean SE ~13% per tier-of-mean variance. t0 is near-saturated
+# (acc≈1.0, σ≈0); 1 seed is sufficient. Total cells/iter: 9 → 7 — fewer
+# wall-time minutes, better signal where it matters.
+DEFAULT_SEEDS_PER_TIER: dict[int, int] = {0: 1, 1: 2, 2: 4}
+
+
+def _seeds_for_task(task_id: str, seeds: int,
+                    seeds_per_tier: dict[int, int] | None) -> int:
+    if seeds_per_tier is None:
+        return seeds
+    tier = _tier_from_task_id(task_id)
+    return seeds_per_tier.get(tier, seeds)
 
 
 log = logging.getLogger("eval_current")
@@ -180,24 +196,38 @@ def _git_sha() -> str | None:
 
 async def _one_run(cell: Cell, *, model: str, skip_planner: bool,
                    time_budget: float | None, max_turns: int) -> dict:
+    """Run one (task, seed) cell via harness.run_session.
+
+    `skip_planner` is kept in the signature for back-compat with callers
+    but is currently unused — the new harness always runs the planner.
+    """
     log.info(f"running {cell.task_id} seed={cell.seed}")
     t0 = time.time()
+
+    # Per-cell run_dir + ephemeral port for parallelism. Seed is mixed into
+    # the port to avoid collision when multiple seeds of the same task run
+    # concurrently. 3100-3999 range is unprivileged and unlikely to clash.
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
+    run_dir = Path(__file__).resolve().parents[1] / "runs" / f"{ts}_{cell.task_id}_seed{cell.seed}"
+    task_dir = Path(__file__).resolve().parents[1] / "tasks" / cell.task_id
+    port = 3100 + (hash((cell.task_id, cell.seed)) % 800)
+
     try:
-        result = await run_headless(
-            task_id=cell.task_id,
+        result = await run_session(
+            task_dir=task_dir,
+            run_dir=run_dir,
             model=model,
-            time_budget_seconds=time_budget,
             max_turns=max_turns,
-            skip_planner=skip_planner,
+            time_budget_seconds=time_budget,
+            port=port,
         )
     except Exception as e:
-        # Synthesize a failure result so the corpus loss still accounts
-        # for the cell rather than crashing the whole eval.
         log.warning(f"{cell.task_id} seed={cell.seed} crashed: {type(e).__name__}: {e}")
         result = {
             "task_id": cell.task_id,
             "tier": None,
-            "run_dir": None,
+            "run_dir": str(run_dir),
             "candidate": None,
             "completed": False,
             "terminated_reason": f"crashed:{type(e).__name__}",
@@ -228,8 +258,11 @@ async def run_eval(
     time_budget: float | None,
     max_turns: int,
     parallel: int,
+    seeds_per_tier: dict[int, int] | None = None,
 ) -> dict[str, Any]:
-    cells = [Cell(task_id=t, seed=s) for t in tasks for s in range(seeds)]
+    cells = [Cell(task_id=t, seed=s)
+             for t in tasks
+             for s in range(_seeds_for_task(t, seeds, seeds_per_tier))]
 
     results: list[dict] = []
     if parallel <= 1:
@@ -283,6 +316,7 @@ async def run_eval(
         "git_sha": git_sha,
         "tasks": tasks,
         "seeds": seeds,
+        "seeds_per_tier": seeds_per_tier,
         "n_runs": len(results),
         "corpus_loss": round(overall["corpus_loss"], 4),
         "mean_accuracy": round(overall["mean_accuracy"], 4),
@@ -310,7 +344,12 @@ def _main() -> int:
     ap.add_argument("--tasks", default=None,
                     help="Comma-separated task IDs. Overrides --set when provided.")
     ap.add_argument("--seeds", type=int, default=2,
-                    help="Seeds per task. Default 2 — bump to 3 for promotion gates.")
+                    help="Uniform seeds per task. Used as a fallback when "
+                         "--seeds-per-tier is not set or doesn't list a tier.")
+    ap.add_argument("--seeds-per-tier", default=None,
+                    help="Per-tier seed counts as 'tier:n,...' (e.g. '0:1,1:2,2:4'). "
+                         "Overrides --seeds for tiers it lists. Tiers come from task_id "
+                         "prefix (t0/t1/t2). Pass 'default' to use DEFAULT_SEEDS_PER_TIER.")
     ap.add_argument("--label", required=True,
                     help="Identifier for this eval batch (researcher writes this).")
     ap.add_argument("--model", default="sonnet")
@@ -328,11 +367,23 @@ def _main() -> int:
     args = ap.parse_args()
 
     tasks = resolve_task_set(args.task_set, args.tasks)
-    log.info(f"eval label={args.label} tasks={tasks} seeds={args.seeds} model={args.model}")
+    seeds_per_tier: dict[int, int] | None
+    if args.seeds_per_tier is None:
+        seeds_per_tier = None
+    elif args.seeds_per_tier == "default":
+        seeds_per_tier = dict(DEFAULT_SEEDS_PER_TIER)
+    else:
+        seeds_per_tier = {}
+        for part in args.seeds_per_tier.split(","):
+            tier_s, n_s = part.split(":")
+            seeds_per_tier[int(tier_s.strip())] = int(n_s.strip())
+    log.info(f"eval label={args.label} tasks={tasks} seeds={args.seeds} "
+             f"seeds_per_tier={seeds_per_tier} model={args.model}")
 
     report = asyncio.run(run_eval(
         tasks=tasks,
         seeds=args.seeds,
+        seeds_per_tier=seeds_per_tier,
         label=args.label,
         model=args.model,
         skip_planner=args.skip_planner,

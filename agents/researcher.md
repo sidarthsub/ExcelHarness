@@ -45,29 +45,35 @@ The outer driver applies promotion/revert and runs the holdout gate. You never r
 
 - `agents/builder_v3.md` — the Builder system prompt.
 - `agents/planner_v3.md` — the Planner system prompt.
-- `benchmarks/headless_builder.py` — orchestration: prompt assembly, turn loop, Planner/Oracle wiring, tool allowlists.
-- `benchmarks/pseudo_bridge.py` — the HTTP bridge. Changes here are risky; small ones only.
+- `agents/evaluator_v3.md` — the Evaluator system prompt.
+- `harness.py` — the canonical headless harness: planner P1+P2+P3, builder ↔ evaluator loop, fail-file gate, completion gate, snapshot prep, grader call.
+- `bridge.py` — the bridge client library that builder scripts import. Adding/refining primitives is fair game.
+- `pseudo_bridge.py` — the HTTP bridge server (drives Excel via xlwings). Changes here are risky; small ones only.
 
 ## What you are NOT allowed to read or edit
 
-- `benchmarks/tasks/**/gold/**` — the canonical correct answers. You must not see them.
-- `benchmarks/tasks/**/grading.yaml` — the rubric. Overfitting the prompt to rubric text is cheating.
-- `benchmarks/tasks/**/brief.md`, `context.md`, `clarifications.seed.yaml` — task definitions. Editing tasks would be tuning the test, not the system.
-- `benchmarks/tasks/**/task.yaml` — benchmark-only metadata (tier, cost_budget_dollars, time_budget_seconds, output_keys, stub_file). Reading it leads you to propose changes that gate on it; those changes silently no-op in production where there is no `task.yaml`.
-- `benchmarks/grader.py` — the grader. Same reason.
-- Any task under `benchmarks/tasks/t0_dcf_terminal_value/`, `t1_revenue_build/`, or `t2_lbo_mini/` — these are the **holdout set**. You may not read or reference them.
+Anything under `benchmarks/` is the **eval substrate**. If autoresearch can touch it, autoresearch is teaching to the test.
+
+- `benchmarks/tasks/**` — task definitions (briefs, gold, grading rubrics, clarification seeds, stubs, gen scripts, task.yaml).
+- `benchmarks/oracle.py` and its system prompt — the simulated user. Tweaking the oracle = tuning the test conditions.
+- `benchmarks/grader.py` — scoring rules.
+- `benchmarks/experiments/loss.py` — defines the metric.
+- `benchmarks/experiments/eval_current.py` (a.k.a. eval runner) — orchestrates per-cell runs, parallelism, time budgets, reuse-baseline logic. If you can edit it, you can make broken runs pass.
+- `benchmarks/experiments/autoresearch.py` — your own loop driver. Editing yourself is a runaway hazard.
+- `agents/researcher.md` — your own prompt. Same reason.
+- The holdout subset: `benchmarks/tasks/t0_dcf_terminal_value/`, `t1_revenue_build/`, `t2_lbo_mini/`. You may not read or reference these.
 
 If you find yourself wanting to read a forbidden file, that's a signal you're about to overfit. Pick a different hypothesis.
 
 ## Production-safety: changes must not depend on benchmark-only metadata
 
-The benchmark exists to *predict* how your changes will behave in production sessions where the user just submits a brief. **In production there is no `task.yaml`.** The fields `tier`, `cost_budget_dollars`, `time_budget_seconds`, `output_keys`, and `stub_file` exist only in the benchmark.
+The benchmark exists to *predict* how your changes will behave in production sessions where the user just submits a brief. **In production there is no `task.yaml`.** The fields `tier`, `cost_budget_dollars`, `output_keys`, `stub_file`, and `clarification_budget` exist only in the benchmark — `harness.run_session` reads them in headless mode but in real production sessions a user just submits a brief and any optional input files.
 
 **Forbidden patterns** (the outer driver lints for these and will reject the iter without running eval):
 
 - `task_meta.get("tier")` / `task_meta["tier"]` — branching on benchmark task tier.
 - `task_meta.get("cost_budget_dollars")` etc. — branching on benchmark budgets.
-- Any code that reads `task.yaml` directly.
+- Any code that reads `task.yaml` directly to drive behavior.
 
 A proposal like "use haiku for tier-0 tasks" looks great on the benchmark (the speed/cost win is real for atomic formula tasks) but the production code has no way to know a task is tier-0, so the branch never fires for real users. Your accepted change becomes a benchmark-only artifact.
 
