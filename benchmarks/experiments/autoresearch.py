@@ -516,7 +516,7 @@ async def _run_holdout(holdout_tasks: list[str]) -> dict[str, Any]:
         model="sonnet",
         skip_planner=False,
         time_budget=HOLDOUT_TIME_BUDGET,
-        max_turns=40,
+        max_turns=60,
         parallel=DEFAULT_PARALLEL,
     )
 
@@ -535,7 +535,7 @@ async def _run_iter_visible(iter_n: int, visible_tasks: list[str]) -> dict[str, 
         model="sonnet",
         skip_planner=False,
         time_budget=VISIBLE_TIME_BUDGET,
-        max_turns=40,
+        max_turns=60,
         parallel=DEFAULT_PARALLEL,
     )
 
@@ -781,7 +781,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
             tasks=visible_tasks, seeds=3, seeds_per_tier=DEFAULT_SEEDS_PER_TIER,
             label="baseline",
             model="sonnet", skip_planner=False,
-            time_budget=VISIBLE_TIME_BUDGET, max_turns=40, parallel=DEFAULT_PARALLEL,
+            time_budget=VISIBLE_TIME_BUDGET, max_turns=60, parallel=DEFAULT_PARALLEL,
         )
     # Track the sqlite label-pattern for pass-count queries in _paired_delta.
     # Both the fresh-run and reuse paths produce/draw rows under "baseline%"

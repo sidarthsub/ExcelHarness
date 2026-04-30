@@ -410,7 +410,7 @@ async function refresh() {
         const txt = await (await fetch("/api/proposal?iter=" + bannerProposalIter)).text();
         $("proposal").textContent = txt || "(proposal file not written yet)";
         if (bannerHyp.startsWith("(hypothesis") && txt) {
-          const firstLine = txt.split("\n").find(l => l.trim());
+          const firstLine = txt.split("\\n").find(l => l.trim());
           if (firstLine) {
             $("hyp-text").textContent = firstLine.replace(/^#+\s*/, "").slice(0, 240);
           }
