@@ -16,7 +16,11 @@ import json
 import logging
 import re
 import sys
+import threading
+import time
 from pathlib import Path
+
+import psutil
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,7 +48,95 @@ AGENTS_DIR = ROOT / "agents"
 
 # Session-level usage accumulator. Populated by _track_usage() on every
 # ResultMessage from any agent (planner, builder, evaluator); summed at exit.
+import contextvars
+
+# Per-call usage accumulator. Each run_session sets a fresh dict in the
+# contextvar so concurrent cells (eval_current runs cells in parallel)
+# don't share state. _track_usage reads from the contextvar; callers
+# outside run_session see the module-level fallback dict.
 _SESSION_USAGE: dict[str, dict] = {}
+_session_usage_var: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "harness_session_usage", default=_SESSION_USAGE
+)
+
+
+def _current_session_usage() -> dict:
+    return _session_usage_var.get()
+
+
+class _CellWatchdog:
+    """Hard wall-time enforcement at the OS level.
+
+    asyncio.wait_for is supposed to enforce time_budget at the loop level,
+    but during network outages / SDK reads / stuck eval loops, the Claude
+    Agent SDK's receive_messages() can park on a subprocess stdin/stdout
+    read that doesn't surface CancelledError cleanly. This watchdog runs
+    in a daemon thread independent of the event loop and SIGKILLs the SDK
+    subprocess tree when the deadline passes — closing stdout, which
+    finally unblocks the asyncio coroutine.
+
+    Targets only PIDs that appeared between snapshot() and arm() — i.e.,
+    the subprocess(es) this cell spawned. Other concurrent cells are
+    untouched. Ported back from the pre-migration headless_builder after
+    its accidental removal led to 17h-runaway cells (see commit 9d2d62b).
+    """
+
+    def __init__(self, label: str, deadline_seconds: float):
+        self.label = label
+        self.deadline_seconds = deadline_seconds
+        self._before: set[int] = set()
+        self._timer: threading.Timer | None = None
+        self._fired = False
+
+    @staticmethod
+    def _children() -> set[int]:
+        try:
+            return {p.pid for p in psutil.Process().children(recursive=True)}
+        except Exception:
+            return set()
+
+    def snapshot(self) -> None:
+        """Call BEFORE the cell starts spawning subprocesses. Records the
+        existing-children set so siblings (other concurrent cells) won't
+        be killed if this watchdog fires.
+        """
+        self._before = self._children()
+
+    def arm(self) -> None:
+        """Start the timer. Targets are computed at fire-time as
+        (current_children - _before), so subprocesses spawned at any
+        point during the cell — planner SDK, builder SDK, evaluator
+        SDK — are all in scope when the deadline hits.
+        """
+        log.info(f"watchdog[{self.label}]: armed (deadline={self.deadline_seconds:.0f}s, "
+                 f"snapshot_size={len(self._before)})")
+        self._timer = threading.Timer(self.deadline_seconds, self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _fire(self) -> None:
+        self._fired = True
+        target = self._children() - self._before
+        log.warning(f"watchdog[{self.label}] FIRED — SIGKILL on {sorted(target)}")
+        for pid in target:
+            try:
+                proc = psutil.Process(pid)
+                for child in proc.children(recursive=True):
+                    try:
+                        child.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                proc.kill()
+            except psutil.NoSuchProcess:
+                pass
+            except Exception as e:
+                log.warning(f"watchdog[{self.label}] kill {pid} failed: {e}")
+
+    def cancel(self) -> bool:
+        """Disarm the timer. Returns True if the watchdog had already fired."""
+        if self._timer is not None:
+            self._timer.cancel()
+        return self._fired
 
 
 def _track_usage(agent: str, label: str, result: ResultMessage) -> None:
@@ -61,7 +153,7 @@ def _track_usage(agent: str, label: str, result: ResultMessage) -> None:
         f"cache_r={cache_r:,} cache_w={cache_w:,} ${cost:.4f}"
     )
 
-    bucket = _SESSION_USAGE.setdefault(
+    bucket = _current_session_usage().setdefault(
         agent, {"input": 0, "output": 0, "cache_r": 0, "cache_w": 0, "cost_usd": 0.0, "calls": 0}
     )
     bucket["input"] += input_t
@@ -74,12 +166,13 @@ def _track_usage(agent: str, label: str, result: ResultMessage) -> None:
 
 def _log_session_totals() -> None:
     """Dump the accumulated usage by agent plus the grand total."""
-    if not _SESSION_USAGE:
+    usage = _current_session_usage()
+    if not usage:
         return
     grand = 0.0
     log.info("=" * 60)
     log.info("Session usage totals:")
-    for agent, b in sorted(_SESSION_USAGE.items()):
+    for agent, b in sorted(usage.items()):
         log.info(
             f"  {agent:10s} calls={b['calls']:<3} in={b['input']:>10,} "
             f"out={b['output']:>9,} cache_r={b['cache_r']:>11,} "
@@ -677,6 +770,8 @@ async def run_builder_loop(session: Session, server: PseudoBridgeServer, spec: d
     max_turns = 50
     turn = 0
     checkpoint_count = 0
+    eval_gate_retries = 0
+    EVAL_GATE_RETRY_CAP = 3
 
     # Start the checkpoint watcher — runs for the entire builder session.
     stop_watcher = asyncio.Event()
@@ -820,16 +915,29 @@ async def run_builder_loop(session: Session, server: PseudoBridgeServer, spec: d
                         await asyncio.gather(*pending, return_exceptions=True)
                 fail_files = sorted(session.run_dir.glob("eval_fail_*.json"))
                 if fail_files:
+                    if eval_gate_retries >= EVAL_GATE_RETRY_CAP:
+                        # Cap: if the builder can't fix the same issues across N
+                        # retries, it's probably stuck on a non-actionable
+                        # finding. Give up and let the post-hoc grader score
+                        # whatever's there. Without this cap a stubborn
+                        # evaluator-builder pair can infinite-loop.
+                        log.warning(f"eval-gate retry cap ({EVAL_GATE_RETRY_CAP}) hit "
+                                    f"with {len(fail_files)} fail file(s) outstanding; "
+                                    f"declaring done anyway")
+                        return
+                    eval_gate_retries += 1
                     findings = "\n\n".join(
                         f"## {ff.name}\n{ff.read_text()}" for ff in fail_files
                     )
-                    log.info(f"sentinel deferred — {len(fail_files)} fail file(s): "
+                    log.info(f"sentinel deferred (retry {eval_gate_retries}/{EVAL_GATE_RETRY_CAP}) — "
+                             f"{len(fail_files)} fail file(s): "
                              f"{', '.join(f.name for f in fail_files)}")
                     await client.query(
-                        f"Pending evaluator failures detected. Address each, re-run "
-                        f"the affected sheet, delete the corresponding fail file with "
-                        f"`rm`, and re-emit the sentinel only when ALL fail files are "
-                        f"gone.\n\n{findings}"
+                        f"Pending evaluator failures detected (retry "
+                        f"{eval_gate_retries}/{EVAL_GATE_RETRY_CAP}). Address each, "
+                        f"re-run the affected sheet, delete the corresponding fail "
+                        f"file with `rm`, and re-emit the sentinel only when ALL "
+                        f"fail files are gone.\n\n{findings}"
                     )
                     continue
                 log.info("builder: completion sentinel verified (no pending fails)")
@@ -918,6 +1026,12 @@ async def run_session(*, task_dir: Path, run_dir: Path,
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # Per-cell isolated usage accumulator. Without this, parallel cells in
+    # eval_current share the module-level _SESSION_USAGE dict and over-count
+    # cost catastrophically (a 7-cell baseline reported $86 spent against
+    # ~$15 actual). contextvars give each asyncio task its own dict.
+    _session_usage_var.set({})
+
     # Session lays out run_dir/{input,scripts,snapshots,...} for us.
     session = Session(root=ROOT, run_dir=run_dir)
     log.info(f"session: {session.run_dir}")
@@ -992,6 +1106,12 @@ async def run_session(*, task_dir: Path, run_dir: Path,
     planner_context = build_context_for_planner(session, brief)
 
     # --- Run planner with oracle, then run builder ↔ evaluator loop ---
+    # Wrapped in three layers of timeout: (a) inline turn-loop check inside
+    # run_builder_loop, (b) asyncio.wait_for soft cancel at +30s, (c) OS-level
+    # SIGKILL watchdog at +60s that targets subprocesses spawned by this cell.
+    # Without (c), SDK reads parking on subprocess stdin/stdout don't surface
+    # CancelledError and cells can run for hours past budget — observed once
+    # already (see commit 9d2d62b's recovery notes).
     spec: dict | None = None
     oracle_stats: dict = {"seed_hits": 0, "cache_hits": 0, "llm_calls": 0,
                           "over_budget": 0, "tokens_in": 0, "tokens_out": 0,
@@ -999,23 +1119,38 @@ async def run_session(*, task_dir: Path, run_dir: Path,
     completed = False
     terminated_reason = "unknown"
     grading_err: str | None = None
-    try:
+
+    # Default budget if caller didn't pass one. Even without explicit budget
+    # we still apply a coarse ceiling so a stuck cell can't run forever.
+    deadline = (time_budget_seconds or 1800.0)
+    watchdog = _CellWatchdog(label=task_dir.name, deadline_seconds=deadline + 60)
+
+    async def _pipeline():
+        nonlocal spec, oracle_stats, completed, terminated_reason
         with PseudoBridgeServer(output_xlsx=candidate_xlsx, port=port, host="127.0.0.1") as server:
+            watchdog.snapshot()
+            watchdog.arm()
             spec, oracle_stats = await run_planner(session, oracle_cfg, brief,
                                                    planner_context=planner_context)
             log.info(f"spec complete: {len(spec.get('sheets', []))} sheet(s)")
-
             await run_builder_loop(session, server, spec, candidate_dir,
                                    results_contract=stub_directive + results_contract,
                                    model=model)
             log.info("builder loop done")
-            # run_builder_loop returns on completion sentinel or max_turns;
-            # treat any return without exception as "completed enough to grade".
             completed = True
             terminated_reason = "sentinel_or_max_turns"
+
+    try:
+        await asyncio.wait_for(_pipeline(), timeout=deadline + 30)
+    except asyncio.TimeoutError:
+        terminated_reason = "time_budget_exceeded"
+        log.warning(f"asyncio.wait_for cancelled pipeline at {deadline + 30:.0f}s")
     except Exception as e:
         log.error(f"run_session pipeline error: {type(e).__name__}: {e}")
         terminated_reason = f"crashed:{type(e).__name__}"
+    finally:
+        if watchdog.cancel():
+            terminated_reason = "watchdog_killed_wall_budget"
 
     wall = _time.time() - t_start
     over_budget = (time_budget_seconds is not None and wall > time_budget_seconds)
@@ -1038,10 +1173,11 @@ async def run_session(*, task_dir: Path, run_dir: Path,
             log.error(f"grader failed: {grading_err}")
 
     # --- Aggregate session usage into per-agent + dollar totals ---
-    builder_usage = _SESSION_USAGE.get("builder", {})
-    planner_usage = _SESSION_USAGE.get("planner", {})
-    evaluator_usage = _SESSION_USAGE.get("evaluator", {})
-    dollars_total = sum(b.get("cost_usd", 0.0) for b in _SESSION_USAGE.values())
+    cell_usage = _current_session_usage()
+    builder_usage = cell_usage.get("builder", {})
+    planner_usage = cell_usage.get("planner", {})
+    evaluator_usage = cell_usage.get("evaluator", {})
+    dollars_total = sum(b.get("cost_usd", 0.0) for b in cell_usage.values())
 
     # planner_stats has historically been a flat dict with prefixed keys
     # consumed by loss.cold_cost_from_result. Mirror that shape so the
@@ -1087,7 +1223,7 @@ async def run_session(*, task_dir: Path, run_dir: Path,
         "weighted_score": graded.get("weighted_score", 0.0),
         "total_weight": graded.get("total_weight", 0.0),
         "checks": graded.get("checks", []),
-        "session_usage": _SESSION_USAGE,
+        "session_usage": cell_usage,
     }
     (session.run_dir / "result.json").write_text(json.dumps(result, indent=2, default=str))
     _log_session_totals()
@@ -1104,6 +1240,9 @@ async def main() -> None:
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--max-turns", type=int, default=50)
     ap.add_argument("--port", type=int, default=3100)
+    ap.add_argument("--time-budget", type=float, default=None,
+                    help="Per-cell wall-time budget in seconds. Soft cancel at +30s, "
+                         "hard SIGKILL via watchdog at +60s.")
     args = ap.parse_args()
 
     task_dir = ROOT / "benchmarks" / "tasks" / args.task
@@ -1120,6 +1259,7 @@ async def main() -> None:
     result = await run_session(
         task_dir=task_dir, run_dir=run_dir,
         model=args.model, max_turns=args.max_turns, port=args.port,
+        time_budget_seconds=args.time_budget,
     )
     print(json.dumps({"task": args.task, "accuracy": result["accuracy"],
                       "passed": result["passed"], "total": result["total"],
