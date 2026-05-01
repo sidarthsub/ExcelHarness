@@ -20,7 +20,7 @@ import openpyxl
 import yaml
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-from benchmarks.recalc import recalc_xlsx
+from recalc import recalc_xlsx
 
 TASK_DIR = Path(__file__).resolve().parent
 

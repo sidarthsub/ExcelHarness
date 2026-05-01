@@ -146,7 +146,9 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """End-to-end: pseudo-bridge + headless Builder + grade."""
+    """End-to-end eval run on a benchmark task: stages task brief + inputs +
+    stub, wires the OracleChannel as the user simulator, runs the harness,
+    and grades against the task's gold rubric."""
     import asyncio
     logging.basicConfig(
         level=logging.INFO,
@@ -155,12 +157,43 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     from datetime import datetime
     from harness import run_session
-    task_dir = Path(__file__).resolve().parent / "tasks" / args.task
+    from benchmarks.oracle import OracleChannel
+
+    task = load_task(args.task)
+    task_dir = task["_dir"]
+    brief = (task_dir / "brief.md").read_text() if (task_dir / "brief.md").exists() else ""
+    inputs_dir = task_dir / "inputs" if (task_dir / "inputs").exists() else None
+    stub_rel = task.get("stub_file")
+    stub_xlsx = (task_dir / stub_rel) if stub_rel else None
+    if stub_xlsx and not stub_xlsx.exists():
+        stub_xlsx = None
+
+    context_md = (task_dir / "context.md").read_text() if (task_dir / "context.md").exists() else ""
+    budget = (task.get("clarification_budget") or {})
+    seed_path = task_dir / "clarifications.seed.yaml"
+    oracle_channel = OracleChannel(
+        task_id=task["id"],
+        context_md=context_md,
+        seed_path=seed_path if seed_path.exists() else None,
+        max_questions=budget.get("max_questions", 10),
+    )
+
+    grading_yaml = task_dir / "gold" / "grading.yaml"
+    output_keys = task.get("output_keys") or []
+
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = Path(__file__).resolve().parent / "runs" / f"{ts}_{args.task}"
     result = asyncio.run(run_session(
-        task_dir=task_dir,
+        brief=brief,
+        inputs_dir=inputs_dir,
         run_dir=run_dir,
+        user_channel=oracle_channel,
+        stub_xlsx=stub_xlsx,
+        output_keys=output_keys,
+        grading_yaml=grading_yaml if grading_yaml.exists() else None,
+        task_id=task["id"],
+        tier=task.get("tier"),
+        cost_budget_dollars=task.get("cost_budget_dollars"),
         model=args.model,
         time_budget_seconds=args.time_budget,
         max_turns=args.max_turns,

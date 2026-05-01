@@ -43,7 +43,7 @@ from typing import Any
 
 import xlwings as xw
 
-from benchmarks.recalc import recalc_xlsx
+from recalc import recalc_xlsx
 
 log = logging.getLogger("pseudo_bridge")
 

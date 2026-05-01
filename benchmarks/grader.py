@@ -30,7 +30,7 @@ from typing import Any
 import openpyxl
 import yaml
 
-from benchmarks.recalc import recalc_xlsx
+from recalc import recalc_xlsx
 
 
 # ---- check dispatch --------------------------------------------------------

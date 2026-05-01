@@ -295,6 +295,36 @@ async def resolve_questions(
     return answers, stats
 
 
+class OracleChannel:
+    """UserChannel adapter for the eval substrate. Wraps resolve_questions
+    so the harness's planner can treat it identically to the production
+    InteractiveCLIChannel: `await channel(questions) -> {qid: answer}`.
+
+    Stats from resolve_questions (seed_hits / cache_hits / llm_calls /
+    over_budget / tokens / cost) are attached to the response dict via
+    the `__channel_stats__` sentinel key, which harness.run_planner
+    pops out and surfaces as `result["channel_stats"]`.
+    """
+
+    def __init__(self, *, task_id: str, context_md: str = "",
+                 seed_path: Path | None = None, max_questions: int = 10,
+                 cache_path: Path = CACHE_PATH):
+        self.cfg = OracleConfig(
+            task_id=task_id,
+            context_md=context_md,
+            seed_path=seed_path,
+            max_questions=max_questions,
+            cache_path=cache_path,
+        )
+
+    async def __call__(self, questions: list[dict]) -> dict[str, str]:
+        answers, stats = await resolve_questions(questions, self.cfg)
+        # Smuggle stats back to the harness via the sentinel key. The
+        # harness pops it before delivering answers to the planner.
+        answers["__channel_stats__"] = stats
+        return answers
+
+
 def parse_clarifications_block(text: str) -> dict[str, str]:
     """Parse a CLARIFICATIONS:\n- id: answer\n... block into a dict."""
     out: dict[str, str] = {}

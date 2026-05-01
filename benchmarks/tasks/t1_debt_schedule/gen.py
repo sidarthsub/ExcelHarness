@@ -19,7 +19,7 @@ from pathlib import Path
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from benchmarks.recalc import recalc_xlsx
+from recalc import recalc_xlsx
 
 TASK_DIR = Path(__file__).resolve().parent
 

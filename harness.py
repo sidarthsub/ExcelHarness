@@ -30,8 +30,8 @@ logging.basicConfig(
 log = logging.getLogger("harness")
 
 from pseudo_bridge import PseudoBridgeServer
-from benchmarks.oracle import OracleConfig, resolve_questions
 from session import Session
+from typing import Awaitable, Callable, Protocol
 
 from claude_agent_sdk import query, ClaudeSDKClient
 from claude_agent_sdk.types import (
@@ -45,6 +45,77 @@ import jsonschema
 
 ROOT = Path(__file__).parent
 AGENTS_DIR = ROOT / "agents"
+
+
+# ---- User channel: the production-vs-eval seam ----------------------------
+#
+# The Planner asks clarification questions during Pass 1. In production those
+# go to a real human (CLI prompt, web chat, IDE pane, …). In benchmarks they
+# go to an LLM oracle that simulates the user from a seed file + context.md.
+# The harness depends only on the UserChannel protocol — callers wire the
+# implementation that fits their context.
+#
+#   - InteractiveCLIChannel (in this module): default for ad-hoc runs;
+#     prints questions to stdout and reads answers from stdin.
+#   - benchmarks.oracle.OracleChannel: eval-substrate adapter (LLM-backed).
+
+
+class Question(dict):
+    """Loose typed view over a planner-emitted question dict.
+
+    Keys: id (str), question (str), context? (str), choices? (list[str]).
+    Uses dict for forward compat with the planner's JSON output shape.
+    """
+
+
+class UserChannel(Protocol):
+    """Resolves planner clarifications to a {qid: answer} dict.
+
+    Implementations may be sync or async. The harness always awaits a coroutine,
+    so sync impls can return a coroutine-emitting wrapper or be wrapped at
+    call site. The benchmark OracleChannel is async; InteractiveCLIChannel
+    runs blocking input() inside an executor.
+    """
+
+    async def __call__(self, questions: list[dict]) -> dict[str, str]:
+        ...
+
+
+class InteractiveCLIChannel:
+    """Default UserChannel: prompts the human via stdin/stdout.
+
+    Each question prints its text + optional context + numbered choices,
+    then reads one line from stdin. Choice numbers are accepted as a
+    shortcut ("1" -> the first choice text); anything else is the literal
+    answer. Empty input is treated as "skip" and the planner gets an
+    empty string back (rare path; usually the planner handles missing
+    answers by re-asking later).
+    """
+
+    async def __call__(self, questions: list[dict]) -> dict[str, str]:
+        loop = asyncio.get_running_loop()
+        answers: dict[str, str] = {}
+        for q in questions:
+            qid = q.get("id", "")
+            question_text = q.get("question", "")
+            context = q.get("context", "") or ""
+            choices = q.get("choices") or []
+
+            prompt_lines = [f"\n  ❓ {question_text}"]
+            if context:
+                prompt_lines.append(f"     ({context})")
+            if choices:
+                for i, c in enumerate(choices, 1):
+                    prompt_lines.append(f"     {i}. {c}")
+            prompt_lines.append("  > ")
+            prompt = "\n".join(prompt_lines)
+
+            ans = await loop.run_in_executor(None, input, prompt)
+            ans = ans.strip()
+            if ans.isdigit() and choices and 1 <= int(ans) <= len(choices):
+                ans = choices[int(ans) - 1]
+            answers[qid] = ans
+        return answers
 
 # Session-level usage accumulator. Populated by _track_usage() on every
 # ResultMessage from any agent (planner, builder, evaluator); summed at exit.
@@ -413,13 +484,19 @@ def build_context_for_builder(session: Session, spec: dict) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-async def run_planner(session: Session, oracle_cfg: OracleConfig, brief: str,
+async def run_planner(session: Session, user_channel: UserChannel, brief: str,
                       planner_context: str | None = None) -> tuple[dict, dict]:
     """Planner using ClaudeSDKClient — single session, all passes share context.
 
-    Returns (spec, oracle_stats). oracle_stats is the resolve_questions
-    output: {seed_hits, cache_hits, llm_calls, over_budget, tokens_in,
-    tokens_out, cost_dollars}.
+    Pass 1 emits clarification questions. The harness routes them to
+    `user_channel`, whose return shape is `{qid: answer}`. The channel may
+    attach implementation-specific stats to the returned answers (oracle
+    seed/cache/LLM counts) by passing them out-of-band; the harness does
+    not require any specific stats shape, but if a `__channel_stats__`
+    sentinel key is present in the response, it's pulled out and returned
+    alongside the spec for diagnostics.
+
+    Returns (spec, channel_stats).
     """
     prompt = (AGENTS_DIR / "planner_v3.md").read_text()
     schema = json.loads((ROOT / "schemas" / "model_spec.schema.json").read_text())
@@ -479,23 +556,23 @@ async def run_planner(session: Session, oracle_cfg: OracleConfig, brief: str,
             m = re.search(r"\[.*\]", pass1_text, re.DOTALL)
             questions = json.loads(m.group(0)) if m else []
 
-        # --- Resolve all clarifications via the oracle in a single batch ---
-        # In production this is a chat-driven Q&A; in headless the oracle reads
-        # the task's clarifications.seed.yaml + context.md and answers all
-        # questions at once. The interactive per-answer pruning loop is moot
-        # here because oracle resolution is atomic.
+        # --- Resolve all clarifications via the user channel ---
+        # Production: InteractiveCLIChannel prompts the human via stdin.
+        # Eval: benchmarks.oracle.OracleChannel answers from a seed file
+        # + LLM fallback. The harness only sees the UserChannel protocol.
         clarifications: dict[str, str] = {}
-        oracle_stats: dict = {"seed_hits": 0, "cache_hits": 0, "llm_calls": 0,
-                              "over_budget": 0, "tokens_in": 0, "tokens_out": 0,
-                              "cost_dollars": 0.0}
+        channel_stats: dict = {}
         if questions:
-            log.info(f"planner: {len(questions)} clarifications → oracle")
-            answers, oracle_stats = await resolve_questions(questions, oracle_cfg)
+            log.info(f"planner: {len(questions)} clarifications → user channel")
+            answers = await user_channel(questions)
+            # Channel may smuggle stats via the sentinel key.
+            if "__channel_stats__" in answers:
+                channel_stats = answers.pop("__channel_stats__")
             for qid, ans in answers.items():
                 clarifications[qid] = ans
                 session.append_clarification(qid, ans)
-            log.info(f"oracle: seed={oracle_stats['seed_hits']} cache={oracle_stats['cache_hits']} "
-                     f"llm={oracle_stats['llm_calls']} over_budget={oracle_stats['over_budget']}")
+            if channel_stats:
+                log.info(f"channel stats: {channel_stats}")
 
         # --- Pass 2: Full spec (same session — context cached) ---
         mark(f"qa_complete ({len(clarifications)} answers)")
@@ -548,7 +625,7 @@ async def run_planner(session: Session, oracle_cfg: OracleConfig, brief: str,
         spec = json.loads(spec_path.read_text())
         jsonschema.validate(instance=spec, schema=schema)
 
-        return spec, oracle_stats
+        return spec, channel_stats
 
     finally:
         try:
@@ -1006,87 +1083,99 @@ def _results_contract_block(task_meta: dict, candidate_dir: Path) -> str:
     return "\n\n---\n\n".join(["\n".join(lines), ""])
 
 
-async def run_session(*, task_dir: Path, run_dir: Path,
+async def run_session(*,
+                      brief: str,
+                      inputs_dir: Path | None = None,
+                      run_dir: Path,
+                      user_channel: UserChannel | None = None,
+                      stub_xlsx: Path | None = None,
+                      output_keys: list[dict] | None = None,
+                      grading_yaml: Path | None = None,
+                      task_id: str = "session",
+                      tier: int | None = None,
+                      cost_budget_dollars: float | None = None,
                       model: str = "sonnet",
                       max_turns: int = 50,
                       time_budget_seconds: float | None = None,
                       port: int = 3100) -> dict:
-    """Run the full pipeline (planner P1+oracle, P2, P3, builder ↔ evaluator
-    loop, grade) on one task. Headless — no live UI, no add-in.
+    """Run the full pipeline on one task: planner (P1+P2+P3) → builder ↔
+    evaluator loop → optional grade → result.json.
 
-    Returns a result dict with grading + usage breakdown matching the
-    contract that benchmarks.experiments.loss + eval_runner expect; also
-    writes `run_dir/result.json`.
+    Args:
+        brief: the user's natural-language request.
+        inputs_dir: optional directory of reference files (xlsx, pdf, txt).
+            Each file is staged into the run dir, xlsx files are dumped via
+            dump.py, PDFs are extracted to companion .txt for the planner.
+        run_dir: where session artifacts (spec, scripts, eval_input,
+            candidate workbook, result.json) are written.
+        user_channel: how planner clarifications get answered. Required for
+            real runs; if None, the planner's Pass 1 questions are
+            silently ignored (planner falls through to Pass 2 with empty
+            clarifications). Production callers pass InteractiveCLIChannel().
+        stub_xlsx: optional starting workbook. Staged into inputs/ and
+            referenced in the builder prompt as the starting state — the
+            builder copies it in via bridge.copy_sheet_from_input.
+        output_keys: optional list of {key, type, description} the builder
+            must emit in candidate/results.json. Used by graders that
+            dereference semantic keys to cell addresses.
+        grading_yaml: optional rubric path. If provided, the candidate
+            xlsx is graded after build and the result dict carries
+            accuracy/passed/total/checks. If None (production), grading
+            is skipped and the caller gets the candidate file directly.
+        task_id: identifier for logging + result.json.
+        tier, cost_budget_dollars: optional metadata pass-through.
     """
     import shutil
     import time as _time
-    import yaml
 
     t_start = _time.time()
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # Per-cell isolated usage accumulator. Without this, parallel cells in
-    # eval_current share the module-level _SESSION_USAGE dict and over-count
-    # cost catastrophically (a 7-cell baseline reported $86 spent against
-    # ~$15 actual). contextvars give each asyncio task its own dict.
+    # Per-cell isolated usage accumulator. Without this, concurrent
+    # run_session calls share the module-level _SESSION_USAGE dict and
+    # over-count cost catastrophically (a 7-cell baseline reported $86
+    # spent against ~$15 actual). contextvars give each asyncio task its
+    # own dict.
     _session_usage_var.set({})
 
     # Session lays out run_dir/{input,scripts,snapshots,...} for us.
     session = Session(root=ROOT, run_dir=run_dir)
     log.info(f"session: {session.run_dir}")
 
-    # --- Read task.yaml early so we know about stub_file before staging ---
-    task_yaml_path = task_dir / "task.yaml"
-    task_meta = yaml.safe_load(task_yaml_path.read_text()) if task_yaml_path.exists() else {}
-
-    # --- Stage inputs from task_dir/inputs into session.input_dir ---
-    task_inputs = task_dir / "inputs"
-    if task_inputs.exists():
-        for src in task_inputs.iterdir():
+    # --- Stage inputs into session.input_dir ---
+    if inputs_dir is not None and inputs_dir.exists():
+        for src in inputs_dir.iterdir():
             dst = session.input_dir / src.name
             if src.is_dir():
                 shutil.copytree(src, dst, dirs_exist_ok=True)
             else:
                 shutil.copy2(src, dst)
 
-    # --- Stage the stub xlsx (if any) into session.input_dir so dump.py picks it up.
-    # The pseudo-bridge starts from a blank workbook; the builder loads the stub via
-    # bridge.copy_sheet_from_input(stub_abs_path, ...) using the absolute path the
-    # builder context surfaces.
+    # --- Stage the stub xlsx (if any) into session.input_dir so dump.py
+    # picks it up. The pseudo-bridge starts from a blank workbook; the
+    # builder loads the stub via bridge.copy_sheet_from_input(stub_abs_path)
+    # using the absolute path the builder context surfaces.
     staged_stub: Path | None = None
-    stub_rel = task_meta.get("stub_file")
-    if stub_rel:
-        stub_src = task_dir / stub_rel
-        if stub_src.exists():
-            staged_stub = session.input_dir / stub_src.name
-            shutil.copy2(stub_src, staged_stub)
+    if stub_xlsx is not None and stub_xlsx.exists():
+        staged_stub = session.input_dir / stub_xlsx.name
+        shutil.copy2(stub_xlsx, staged_stub)
 
-    # --- Brief + clarifications ---
-    brief_path = task_dir / "brief.md"
-    brief = brief_path.read_text() if brief_path.exists() else ""
+    # --- Brief + initial clarifications log ---
     session.save_brief(brief)
 
     # --- Canonical preprocessing: PDF extraction + xlsx dumping (all sheets) ---
     extract_pdf_inputs(session)
-    preprocess_inputs(session)  # no sheet_filter → dump everything (incl. stub if staged)
-
-    # --- Oracle config (simulated user answering planner clarifications) ---
-    context_path = task_dir / "context.md"
-    oracle_cfg = OracleConfig(
-        task_id=task_dir.name,
-        context_md=context_path.read_text() if context_path.exists() else "",
-        seed_path=task_dir / "clarifications.seed.yaml",
-    )
-
-    # --- Task metadata for results contract ---
-    tier = task_meta.get("tier")
-    cost_budget = task_meta.get("budget", {}).get("cost_dollars") if isinstance(task_meta.get("budget"), dict) else None
+    preprocess_inputs(session)  # dumps every staged xlsx (incl. stub)
 
     candidate_dir = session.run_dir / "candidate"
     candidate_dir.mkdir(parents=True, exist_ok=True)
     candidate_xlsx = candidate_dir / "model.xlsx"
-    results_contract = _results_contract_block(task_meta, candidate_dir)
+    # Build results.json contract from output_keys (eval substrate provides
+    # this via task.yaml; production usage typically passes None).
+    results_contract = _results_contract_block(
+        {"output_keys": output_keys or []}, candidate_dir,
+    )
 
     # If a stub was staged, prepend a directive telling the builder it's the
     # starting state to copy in (not just a reference). The dump itself is
@@ -1105,33 +1194,34 @@ async def run_session(*, task_dir: Path, run_dir: Path,
     # --- Planner context (brief + dumps + clarification stubs) ---
     planner_context = build_context_for_planner(session, brief)
 
-    # --- Run planner with oracle, then run builder ↔ evaluator loop ---
+    # --- Run planner with user_channel, then run builder ↔ evaluator loop ---
     # Wrapped in three layers of timeout: (a) inline turn-loop check inside
     # run_builder_loop, (b) asyncio.wait_for soft cancel at +30s, (c) OS-level
     # SIGKILL watchdog at +60s that targets subprocesses spawned by this cell.
     # Without (c), SDK reads parking on subprocess stdin/stdout don't surface
-    # CancelledError and cells can run for hours past budget — observed once
-    # already (see commit 9d2d62b's recovery notes).
+    # CancelledError and cells can run for hours past budget.
     spec: dict | None = None
-    oracle_stats: dict = {"seed_hits": 0, "cache_hits": 0, "llm_calls": 0,
-                          "over_budget": 0, "tokens_in": 0, "tokens_out": 0,
-                          "cost_dollars": 0.0}
+    channel_stats: dict = {}
     completed = False
     terminated_reason = "unknown"
     grading_err: str | None = None
 
+    # Default user_channel if caller didn't pass one (production CLI usage).
+    if user_channel is None:
+        user_channel = InteractiveCLIChannel()
+
     # Default budget if caller didn't pass one. Even without explicit budget
     # we still apply a coarse ceiling so a stuck cell can't run forever.
     deadline = (time_budget_seconds or 1800.0)
-    watchdog = _CellWatchdog(label=task_dir.name, deadline_seconds=deadline + 60)
+    watchdog = _CellWatchdog(label=task_id, deadline_seconds=deadline + 60)
 
     async def _pipeline():
-        nonlocal spec, oracle_stats, completed, terminated_reason
+        nonlocal spec, channel_stats, completed, terminated_reason
         with PseudoBridgeServer(output_xlsx=candidate_xlsx, port=port, host="127.0.0.1") as server:
             watchdog.snapshot()
             watchdog.arm()
-            spec, oracle_stats = await run_planner(session, oracle_cfg, brief,
-                                                   planner_context=planner_context)
+            spec, channel_stats = await run_planner(session, user_channel, brief,
+                                                    planner_context=planner_context)
             log.info(f"spec complete: {len(spec.get('sheets', []))} sheet(s)")
             await run_builder_loop(session, server, spec, candidate_dir,
                                    results_contract=stub_directive + results_contract,
@@ -1157,16 +1247,19 @@ async def run_session(*, task_dir: Path, run_dir: Path,
     if over_budget and terminated_reason in ("unknown", "sentinel_or_max_turns"):
         terminated_reason = "time_budget_exceeded"
 
-    # --- Grade ---
-    from benchmarks.grader import grade
-    graded: dict = {"accuracy": 0.0, "passed": 0, "total": 0,
-                    "weighted_score": 0.0, "total_weight": 0.0, "checks": []}
-    if candidate_xlsx.exists():
+    # --- Optional grade ---
+    # Grading is eval-only — production callers don't pass `grading_yaml`
+    # and skip this block entirely. The benchmarks/grader.py import is
+    # only resolved if the caller is asking for a grade.
+    graded: dict = {"accuracy": None, "passed": None, "total": None,
+                    "weighted_score": None, "total_weight": None, "checks": []}
+    if grading_yaml is not None and candidate_xlsx.exists():
         try:
+            from benchmarks.grader import grade
             graded = grade(
                 candidate_xlsx=candidate_xlsx,
-                grading_yaml=task_dir / "gold" / "grading.yaml",
-                task_dir=task_dir,
+                grading_yaml=grading_yaml,
+                task_dir=grading_yaml.parent.parent,  # gold/grading.yaml -> task_dir
             )
         except Exception as e:
             grading_err = f"{type(e).__name__}: {e}"
@@ -1199,9 +1292,9 @@ async def run_session(*, task_dir: Path, run_dir: Path,
     }
 
     result = {
-        "task_id": task_dir.name,
+        "task_id": task_id,
         "tier": tier,
-        "cost_budget_dollars": cost_budget,
+        "cost_budget_dollars": cost_budget_dollars,
         "run_dir": str(session.run_dir),
         "candidate": str(candidate_xlsx),
         "spec_generated": spec is not None,
@@ -1215,7 +1308,7 @@ async def run_session(*, task_dir: Path, run_dir: Path,
         "builder_usage": builder_usage,
         "planner_stats": planner_stats_flat,
         "evaluator_stats": evaluator_stats_flat,
-        "oracle_stats": oracle_stats,
+        "channel_stats": channel_stats,
         "dollars": dollars_total,
         "accuracy": graded.get("accuracy", 0.0),
         "passed": graded.get("passed", 0),
@@ -1231,38 +1324,70 @@ async def run_session(*, task_dir: Path, run_dir: Path,
 
 
 async def main() -> None:
-    """CLI entrypoint. Usage: python3 -m harness --task <task_id> [--run-dir DIR]"""
+    """CLI entrypoint for ad-hoc / production use.
+
+    Reads a brief from a file (or `--brief-text`), optionally takes an
+    inputs directory and a stub workbook, and runs the full pipeline
+    with InteractiveCLIChannel so the human answers planner clarifications
+    via stdin.
+
+    Usage:
+      python3 -m harness --brief brief.md [--inputs ./inputs] [--stub starter.xlsx]
+                         [--out runs/my_run] [--time-budget 1800]
+    """
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", required=True, help="task_id under benchmarks/tasks/")
-    ap.add_argument("--run-dir", default=None,
-                    help="Output dir; default: benchmarks/runs/<timestamp>_<task>")
+    ap.add_argument("--brief", type=Path, default=None,
+                    help="Path to brief.md. Either this or --brief-text required.")
+    ap.add_argument("--brief-text", default=None, help="Inline brief string.")
+    ap.add_argument("--inputs", type=Path, default=None,
+                    help="Directory of reference files (xlsx/pdf/txt).")
+    ap.add_argument("--stub", type=Path, default=None,
+                    help="Optional starting workbook the builder copies in.")
+    ap.add_argument("--out", "--run-dir", dest="run_dir", type=Path, default=None,
+                    help="Output dir; default: ./runs/<timestamp>")
+    ap.add_argument("--task-id", default="session",
+                    help="Identifier for logging + result.json.")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--max-turns", type=int, default=50)
     ap.add_argument("--port", type=int, default=3100)
     ap.add_argument("--time-budget", type=float, default=None,
-                    help="Per-cell wall-time budget in seconds. Soft cancel at +30s, "
+                    help="Wall-time budget in seconds. Soft cancel at +30s, "
                          "hard SIGKILL via watchdog at +60s.")
     args = ap.parse_args()
 
-    task_dir = ROOT / "benchmarks" / "tasks" / args.task
-    if not task_dir.exists():
-        raise SystemExit(f"task not found: {task_dir}")
+    if args.brief_text is not None:
+        brief = args.brief_text
+    elif args.brief is not None:
+        brief = args.brief.read_text()
+    else:
+        raise SystemExit("supply --brief PATH or --brief-text TEXT")
 
     if args.run_dir:
-        run_dir = Path(args.run_dir)
+        run_dir = args.run_dir
     else:
         from datetime import datetime
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        run_dir = ROOT / "benchmarks" / "runs" / f"{ts}_{args.task}"
+        run_dir = ROOT / "runs" / f"{ts}_{args.task_id}"
 
     result = await run_session(
-        task_dir=task_dir, run_dir=run_dir,
-        model=args.model, max_turns=args.max_turns, port=args.port,
+        brief=brief,
+        inputs_dir=args.inputs,
+        stub_xlsx=args.stub,
+        run_dir=run_dir,
+        task_id=args.task_id,
+        model=args.model,
+        max_turns=args.max_turns,
+        port=args.port,
         time_budget_seconds=args.time_budget,
+        # user_channel defaults to InteractiveCLIChannel — humans answer via stdin
     )
-    print(json.dumps({"task": args.task, "accuracy": result["accuracy"],
-                      "passed": result["passed"], "total": result["total"],
+    print(json.dumps({"task_id": args.task_id,
+                      "candidate": result["candidate"],
+                      "completed": result["completed"],
+                      "terminated_reason": result["terminated_reason"],
+                      "wall_seconds": round(result["wall_seconds"], 1),
+                      "dollars": round(result["dollars"], 4),
                       "run_dir": result["run_dir"]}, indent=2))
 
 
