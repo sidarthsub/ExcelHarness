@@ -1,0 +1,17 @@
+# Per-session artifacts (runs, dumps, snapshots, scripts, candidate xlsx)
+runs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Secrets
+.env
+
+# macOS
+.DS_Store
+
+# Office temp files
+/tmp/Excel add-in *.xlsx
