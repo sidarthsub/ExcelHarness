@@ -11,7 +11,11 @@ benchmarks/experiments/status.json
 benchmarks/experiments/history.jsonl
 benchmarks/experiments/autoresearch.pid
 benchmarks/experiments/autoresearch.log
+benchmarks/experiments/autoresearch.log.archive_*
+benchmarks/experiments/autoresearch.stdout.log
+benchmarks/experiments/dashboard.log
 benchmarks/experiments/proposals/
+benchmarks/experiments/proposals_archive_*/
 
 # Secrets
 .env

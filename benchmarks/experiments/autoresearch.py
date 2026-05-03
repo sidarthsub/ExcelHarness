@@ -97,8 +97,8 @@ HOLDOUT_EVERY_N_ACCEPTED = 3
 # Per-cell wall caps. Visible runs use the tighter budget so iter wall
 # stays ≤ 10 min; holdout keeps headroom for the harder lbo_mini task
 # whose cells legitimately take 6-12 min.
-VISIBLE_TIME_BUDGET = 600.0
-HOLDOUT_TIME_BUDGET = 900.0
+VISIBLE_TIME_BUDGET = 800.0
+HOLDOUT_TIME_BUDGET = 1100.0
 MAX_WALL_SECONDS = HOLDOUT_TIME_BUDGET  # back-compat alias
 
 # Default concurrency. 3 proved stable in testing; 4 destabilized under
@@ -1067,8 +1067,8 @@ def _main() -> int:
     root.addHandler(sh)
     log.info(f"logging to file: {log_path}")
     ap = argparse.ArgumentParser(prog="benchmarks.experiments.autoresearch")
-    ap.add_argument("--max-iters", type=int, default=10)
-    ap.add_argument("--max-dollars", type=float, default=50.0)
+    ap.add_argument("--max-iters", type=int, default=60)
+    ap.add_argument("--max-dollars", type=float, default=400.0)
     ap.add_argument("--skip-holdout", action="store_true",
                     help="Skip the holdout gate. Only for debugging the loop itself.")
     ap.add_argument("--rotate", action="store_true",
