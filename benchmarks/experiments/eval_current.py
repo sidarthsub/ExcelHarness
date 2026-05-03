@@ -33,8 +33,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from benchmarks.experiments import store as store_mod
 from benchmarks.experiments.loss import corpus_loss, per_run_loss, _tier_from_task_id
+from benchmarks.oracle import OracleChannel
 from harness import run_session
 
 
@@ -213,10 +216,39 @@ async def _one_run(cell: Cell, *, model: str, skip_planner: bool,
     task_dir = Path(__file__).resolve().parents[1] / "tasks" / cell.task_id
     port = 3100 + (hash((cell.task_id, cell.seed)) % 800)
 
+    # Adapt task.yaml → run_session kwargs (mirrors benchmarks/runner.cmd_run).
+    # The harness no longer takes task_dir directly — eval substrate stages
+    # brief / inputs / stub and plugs OracleChannel as the user simulator.
+    task_meta = yaml.safe_load((task_dir / "task.yaml").read_text())
+    brief = (task_dir / "brief.md").read_text() if (task_dir / "brief.md").exists() else ""
+    inputs_dir = task_dir / "inputs" if (task_dir / "inputs").exists() else None
+    stub_rel = task_meta.get("stub_file")
+    stub_xlsx = (task_dir / stub_rel) if stub_rel else None
+    if stub_xlsx and not stub_xlsx.exists():
+        stub_xlsx = None
+    grading_yaml = task_dir / "gold" / "grading.yaml"
+    context_md = (task_dir / "context.md").read_text() if (task_dir / "context.md").exists() else ""
+    seed_path = task_dir / "clarifications.seed.yaml"
+    budget = task_meta.get("clarification_budget") or {}
+    oracle_channel = OracleChannel(
+        task_id=task_meta["id"],
+        context_md=context_md,
+        seed_path=seed_path if seed_path.exists() else None,
+        max_questions=budget.get("max_questions", 10),
+    )
+
     try:
         result = await run_session(
-            task_dir=task_dir,
+            brief=brief,
+            inputs_dir=inputs_dir,
             run_dir=run_dir,
+            user_channel=oracle_channel,
+            stub_xlsx=stub_xlsx,
+            output_keys=task_meta.get("output_keys") or [],
+            grading_yaml=grading_yaml if grading_yaml.exists() else None,
+            task_id=task_meta["id"],
+            tier=task_meta.get("tier"),
+            cost_budget_dollars=task_meta.get("cost_budget_dollars"),
             model=model,
             max_turns=max_turns,
             time_budget_seconds=time_budget,
