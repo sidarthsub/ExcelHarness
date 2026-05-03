@@ -781,7 +781,7 @@ async def run_evaluator(eval_dir: Path, input_dumps_dir: Path) -> dict:
 
 async def run_builder_loop(session: Session, server: PseudoBridgeServer, spec: dict,
                            candidate_dir: Path, results_contract: str = "",
-                           model: str = "sonnet") -> None:
+                           model: str = "sonnet", max_turns: int = 80) -> None:
     """Long-running Builder loop using a stateful ClaudeSDKClient.
 
     The client maintains conversation state across turns. After each turn,
@@ -844,7 +844,6 @@ async def run_builder_loop(session: Session, server: PseudoBridgeServer, spec: d
         f"{builder_context}"
     )
 
-    max_turns = 50
     turn = 0
     checkpoint_count = 0
     eval_gate_retries = 0
@@ -1225,7 +1224,7 @@ async def run_session(*,
             log.info(f"spec complete: {len(spec.get('sheets', []))} sheet(s)")
             await run_builder_loop(session, server, spec, candidate_dir,
                                    results_contract=stub_directive + results_contract,
-                                   model=model)
+                                   model=model, max_turns=max_turns)
             log.info("builder loop done")
             completed = True
             terminated_reason = "sentinel_or_max_turns"
