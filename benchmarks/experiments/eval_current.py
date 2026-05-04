@@ -74,16 +74,30 @@ CANARY_SET = ["t0_npv", "t1_inputs_from_term_sheet"]
 # `lbo_mini` lives in holdout — its 600-1100s cell time and stronger
 # failure-mode coverage make it the right promotion gate but the wrong
 # fast-feedback signal.
+# Visible/holdout swap (2026-05-04): the prior visible set
+# (t0_npv / t1_inputs_from_term_sheet / t2_cap_table_series_ab) had t0
+# saturated at 1.0 and t1 frozen — across 41 real iters, 0 t0 seed flips
+# and 1 t1 seed flip out of 41×{1+2}=123 chances. All Researcher signal
+# was concentrated in the 4 t2_cap_table seeds, where one seed flipping
+# = 2.5 weighted units = the gate threshold itself. Net: pass-Δ noise
+# floor equalled the accept threshold.
+#
+# Swap brings tasks with real headroom into visible:
+#   - t1_revenue_build: build task with multi-stage failure modes
+#   - t2_lbo_mini: prior holdout had mean acc ~0.47 (huge headroom)
+# Holdout becomes the easier set — its job is detecting overfitting,
+# not maximizing difficulty, so saturated holdout is fine.
 VISIBLE_SET = [
-    "t0_npv",
-    "t1_inputs_from_term_sheet",
-    "t2_cap_table_series_ab",
-]
-
-HOLDOUT_SET = [
     "t0_dcf_terminal_value",
     "t1_revenue_build",
     "t2_lbo_mini",
+    "t2_cap_table_series_ab",  # 2nd t2 — diversifies the dominant signal source
+]
+
+HOLDOUT_SET = [
+    "t0_npv",
+    "t1_inputs_from_term_sheet",
+    "t2_safe_convert_series_a",
 ]
 
 # Full pools for rotation. Task tiers are roughly balanced for speed:

@@ -84,6 +84,18 @@ MAX_PER_TASK_REGRESSION = 1          # reject if any task lost ≥(this+1) seeds
 # noise while accepting real meaningful continuous improvements.
 CONTINUOUS_BIG_WIN_THRESHOLD = 0.10  # corpus_delta must be ≤ -this for secondary path
 
+# Borderline re-run band — pass-Δ values that fit "single seed flipped on
+# t2" (the noise-floor unit). 11 of the prior 41 real iters landed at
+# -2.5 with worst_reg=1, which is ambiguous between "real harm" and
+# "one t2 seed re-rolled into a fail". When a candidate lands here, we
+# re-run the visible eval and average the two pass-Δ measurements
+# before applying the gate. Excludes:
+#   - pass-Δ ≥ 0  (no signal to denoise; a no-op stays a no-op on re-run)
+#   - pass-Δ < -2.5 (clear regression, don't waste re-run cost)
+#   - worst_reg > 1 (one task lost ≥2 seeds — real damage, don't re-run)
+BORDERLINE_PASS_DELTA_LO = -2.5  # inclusive
+BORDERLINE_PASS_DELTA_HI = 0.0   # exclusive — pass-Δ=0 is no-op territory, skip
+
 HOLDOUT_REGRESSION_MAX = 0.03  # holdout loss must not be more than this worse than pre-change holdout.
 
 # Holdout is expensive (~20 min). Run it on accepted iters only, and only
@@ -101,9 +113,13 @@ VISIBLE_TIME_BUDGET = 800.0
 HOLDOUT_TIME_BUDGET = 1100.0
 MAX_WALL_SECONDS = HOLDOUT_TIME_BUDGET  # back-compat alias
 
-# Default concurrency. 3 proved stable in testing; 4 destabilized under
-# real workload before the ws.activate() + datetime JSON fixes landed.
-DEFAULT_PARALLEL = 9
+# Default concurrency. 9 has been the stable working value for the
+# 7-cell visible (1+2+4). Bumped to 12 to absorb the 2nd-t2 visible
+# task (now 1+2+4+4=11 cells) without serializing — keeps iter wall ≤
+# slowest-cell time. macOS Excel has been observed handling ~12 hidden
+# instances; if AppleScript timeouts return, revert to 9 and accept
+# the ~5-min wall extension from queueing.
+DEFAULT_PARALLEL = 12
 
 
 # ---- git helpers ----------------------------------------------------------
@@ -521,17 +537,24 @@ async def _run_holdout(holdout_tasks: list[str]) -> dict[str, Any]:
     )
 
 
-async def _run_iter_visible(iter_n: int, visible_tasks: list[str]) -> dict[str, Any]:
+async def _run_iter_visible(iter_n: int, visible_tasks: list[str],
+                            label: str | None = None) -> dict[str, Any]:
     """Run the per-iter visible eval. Owned by the orchestrator (not the
     Researcher) so that (a) Researcher session can end as soon as it's
     done editing, eliminating the stale-background-task coordination bug,
-    and (b) we can apply the tighter VISIBLE_TIME_BUDGET cap consistently."""
-    log.info(f"running iter {iter_n} visible eval on {visible_tasks}…")
+    and (b) we can apply the tighter VISIBLE_TIME_BUDGET cap consistently.
+
+    `label` overrides the default `iter{n}_visible` — used by the
+    borderline re-run path which needs a separate label so its rows
+    don't aggregate into the original eval's pass-count query.
+    """
+    use_label = label or f"iter{iter_n}_visible"
+    log.info(f"running iter {iter_n} visible eval on {visible_tasks} (label={use_label})…")
     return await run_eval(
         tasks=visible_tasks,
         seeds=3,
         seeds_per_tier=DEFAULT_SEEDS_PER_TIER,
-        label=f"iter{iter_n}_visible",
+        label=use_label,
         model="sonnet",
         skip_planner=False,
         time_budget=VISIBLE_TIME_BUDGET,
@@ -740,7 +763,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
     conn = store_mod.connect()
     try:
         cur = conn.execute(
-            "DELETE FROM runs WHERE label LIKE 'iter%_visible' "
+            "DELETE FROM runs WHERE label LIKE 'iter%_visible%' "
             "OR label LIKE 'iter%_canary'"
         )
         conn.commit()
@@ -868,6 +891,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
         leak_reason = _check_for_tier_leaks(branch)
         paired = None
         failure_diag = None
+        rerun_info: dict | None = None
         if leak_reason is not None:
             reason = leak_reason
             failure_diag = leak_reason
@@ -883,6 +907,59 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
             elif paired is None or paired.get("corpus_delta") is None:
                 missing = (paired or {}).get("missing_in_candidate") or []
                 failure_diag = f"paired_delta_uncomputable (missing per-task data; missing_tasks={missing})"
+
+            # Borderline re-run: if pass-Δ sits in the noise band (single
+            # t2 seed-flip territory) and no task lost ≥2 seeds, re-run the
+            # visible eval and average the two pass-Δ measurements before
+            # gating. Halves variance on the dominant signal source. Skips
+            # pass-Δ ≥ 0 (no signal to denoise) and pass-Δ < -2.5 (real harm).
+            if (paired and paired.get("corpus_delta") is not None
+                    and not paired.get("missing_in_candidate")):
+                pd0 = paired["pass_count_delta_weighted"]
+                wr0 = paired["worst_per_task_pass_regression"]
+                if (BORDERLINE_PASS_DELTA_LO <= pd0 < BORDERLINE_PASS_DELTA_HI
+                        and wr0 <= MAX_PER_TASK_REGRESSION):
+                    rerun_label = f"iter{i}_visible_rerun"
+                    log.info(f"iter {i}: borderline pass-Δ={pd0:+.1f} (worst_reg={wr0}); "
+                             f"re-running visible eval (label={rerun_label}) to denoise")
+                    _write_status(phase="evaluating_rerun", iter=i)
+                    try:
+                        await _run_iter_visible(i, visible_tasks, label=rerun_label)
+                    except Exception as e:
+                        log.warning(f"iter {i} rerun crashed: {type(e).__name__}: {e}")
+                    rerun_summary = _load_latest_eval_for(rerun_label)
+                    if rerun_summary:
+                        spent += rerun_summary.get("cost_actual", 0.0) or 0.0
+                    paired2 = _paired_delta(baseline_eval, rerun_label, visible_tasks) if rerun_summary else None
+                    if paired2 and paired2.get("corpus_delta") is not None:
+                        pd1 = paired2["pass_count_delta_weighted"]
+                        cd0 = paired["corpus_delta"]
+                        cd1 = paired2["corpus_delta"]
+                        averaged_pd = round((pd0 + pd1) / 2, 2)
+                        averaged_cd = (cd0 + cd1) / 2
+                        # max() so a real ≥2-seed loss in EITHER run still
+                        # trips per_task_regression even if averaged looks ok.
+                        averaged_wr = max(wr0, paired2["worst_per_task_pass_regression"])
+                        rerun_info = {
+                            "initial_pass_delta": pd0,
+                            "rerun_pass_delta": pd1,
+                            "averaged_pass_delta": averaged_pd,
+                            "initial_corpus_delta": cd0,
+                            "rerun_corpus_delta": cd1,
+                        }
+                        log.info(f"iter {i}: rerun pass-Δ={pd1:+.1f}, "
+                                 f"averaged pass-Δ={averaged_pd:+.1f} "
+                                 f"(was {pd0:+.1f}), worst_reg={averaged_wr}")
+                        # Replace paired with the averaged metrics — the gate
+                        # logic below reads paired and is unchanged otherwise.
+                        paired["pass_count_delta_weighted"] = averaged_pd
+                        paired["corpus_delta"] = averaged_cd
+                        paired["worst_per_task_pass_regression"] = averaged_wr
+                        paired["per_task_rerun"] = paired2.get("per_task")
+                        paired["rerun"] = True
+                    else:
+                        log.warning(f"iter {i}: rerun produced no usable paired-Δ; "
+                                    f"keeping initial measurement")
 
         if leak_reason is None and visible_summary and paired and paired["corpus_delta"] is not None:
             new_loss = visible_summary["loss"]
@@ -1021,6 +1098,7 @@ async def outer_loop(*, max_iters: int, max_dollars: float,
             "pass_count_delta_weighted": (paired or {}).get("pass_count_delta_weighted") if paired else None,
             "worst_per_task_pass_regression": (paired or {}).get("worst_per_task_pass_regression") if paired else None,
             "paired_per_task": (paired or {}).get("per_task") if paired else None,
+            "rerun": rerun_info,
             "sha_before": current_sha,
             "wall_seconds": round(time.time() - iter_start, 1),
             "spent_usd": round(spent, 4),
