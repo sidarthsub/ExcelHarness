@@ -109,8 +109,8 @@ HOLDOUT_EVERY_N_ACCEPTED = 3
 # Per-cell wall caps. Visible runs use the tighter budget so iter wall
 # stays ≤ 10 min; holdout keeps headroom for the harder lbo_mini task
 # whose cells legitimately take 6-12 min.
-VISIBLE_TIME_BUDGET = 800.0
-HOLDOUT_TIME_BUDGET = 1100.0
+VISIBLE_TIME_BUDGET = 1200.0
+HOLDOUT_TIME_BUDGET = 1200.0
 MAX_WALL_SECONDS = HOLDOUT_TIME_BUDGET  # back-compat alias
 
 # Default concurrency. 9 has been the stable working value for the
